@@ -166,12 +166,32 @@
     "map": {
       "java": [
         {
+          "glob": "*.sh",
+          "role": "config",
+          "build_class": "verify"
+        },
+        {
           "glob": "*/src/main/*.java",
           "role": "production",
           "build_class": "compile"
         },
         {
+          "glob": "*/src/main/resources/*",
+          "role": "production",
+          "build_class": "compile"
+        },
+        {
           "glob": "*/src/test/*.java",
+          "role": "test",
+          "build_class": "module-tests"
+        },
+        {
+          "glob": "*/src/test/*IT.java",
+          "role": "test",
+          "build_class": "verify"
+        },
+        {
+          "glob": "*/src/test/resources/*",
           "role": "test",
           "build_class": "module-tests"
         },
@@ -213,7 +233,8 @@
       "chore/"
     ],
     "pr_strategy": "compact",
-    "pr_compact_max_changed_files": 150
+    "pr_compact_max_changed_files": 150,
+    "merge_queue_managed_externally": false
   },
   "providers": [
     {
@@ -277,9 +298,11 @@
       "logs_days": 1,
       "archived_plans_days": 5,
       "lessons_superseded_days": 0,
-      "temp_on_maintenance": true
+      "temp_on_maintenance": true,
+      "plugin_cache_keep_versions": 5,
+      "plugin_cache_keep_days": 3
     },
-    "provisioned_version": "0.1.1116",
-    "config_seed_fingerprint": "37df1a33"
+    "provisioned_version": "0.1.1212",
+    "config_seed_fingerprint": "9a1bd104"
   }
 }
