@@ -424,6 +424,11 @@ an isolated-component or server-capability test alone does not qualify the row a
 | xref:../requirements.adoc#CLIENT-22[CLIENT-22] | (cross-cutting)
 | Concurrent flows; *every* threat → a fail-closed adversarial unit test
 | The full `*IT` suite across providers | all
+
+| xref:../requirements.adoc#CLIENT-23[CLIENT-23] | (transport trust seam)
+| The configured `SSLContext` reaches *every* endpoint handler `BackChannelHttp` produces; absent
+  one, the JVM default truststore is used; a rejected context still surfaces as `TransportException`
+| — (needs a private-CA / self-signed IdP fixture; not in the current provider set) | all
 |===
 
 == Per-increment definition of done (test view)
