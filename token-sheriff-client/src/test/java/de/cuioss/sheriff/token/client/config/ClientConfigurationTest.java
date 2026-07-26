@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
 
+import java.util.ArrayList;
+
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -334,6 +336,100 @@ class ClientConfigurationTest {
                             ClientAuthMethod.fromMetadataValue("tls_client_auth").orElseThrow()),
                     () -> assertTrue(ClientAuthMethod.fromMetadataValue("none").isEmpty()),
                     () -> assertTrue(ClientAuthMethod.fromMetadataValue(null).isEmpty()));
+        }
+    }
+
+    @Nested
+    @DisplayName("Construction-time issuer and scope validation (L14)")
+    class IssuerAndScopeValidation {
+
+        private ClientConfiguration.ClientConfigurationBuilder builderWithIssuer(String issuerValue) {
+            return ClientConfiguration.builder()
+                    .issuer(issuerValue)
+                    .clientId(Generators.nonBlankStrings().next())
+                    .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                    .clientSecret(Generators.nonBlankStrings().next());
+        }
+
+        @Test
+        @DisplayName("Should reject a blank issuer or client id — a present-but-empty value is not a value")
+        void shouldRejectBlankIssuerAndClientId() {
+            var blankIssuer = builderWithIssuer("   ");
+            var blankClientId = ClientConfiguration.builder()
+                    .issuer(issuer()).clientId("  ")
+                    .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC);
+
+            assertAll("blank required fields",
+                    () -> assertThrows(IllegalArgumentException.class, blankIssuer::build,
+                            "a whitespace-only issuer must be rejected at construction"),
+                    () -> assertThrows(IllegalArgumentException.class, blankClientId::build,
+                            "a whitespace-only client id must be rejected at construction"));
+        }
+
+        @Test
+        @DisplayName("Should reject a relative issuer that carries no scheme at all")
+        void shouldRejectRelativeIssuer() {
+            var relative = builderWithIssuer("issuer.example.com/auth");
+
+            assertThrows(IllegalArgumentException.class, relative::build,
+                    "a relative reference cannot identify an authorization server");
+        }
+
+        @Test
+        @DisplayName("Should reject an absolute issuer URI that carries no host")
+        void shouldRejectIssuerWithoutHost() {
+            var hostless = builderWithIssuer("urn:example:issuer");
+
+            assertThrows(IllegalArgumentException.class, hostless::build,
+                    "an absolute URI without a host cannot be dereferenced for discovery");
+        }
+
+        @Test
+        @DisplayName("Should reject an issuer whose scheme is neither http nor https")
+        void shouldRejectNonHttpIssuerScheme() {
+            var ftp = builderWithIssuer("ftp://issuer.example.com");
+
+            assertThrows(IllegalArgumentException.class, ftp::build,
+                    "only http(s) issuers can be resolved over the discovery transport");
+        }
+
+        @Test
+        @DisplayName("Should reject a malformed issuer URL that cannot be parsed at all")
+        void shouldRejectUnparseableIssuer() {
+            var malformed = builderWithIssuer("https://issuer.example.com/ a path");
+
+            assertThrows(IllegalArgumentException.class, malformed::build,
+                    "an unparseable issuer must fail at construction, not later on the wire");
+        }
+
+        @Test
+        @DisplayName("Should accept an http issuer so a cleartext local test setup stays configurable")
+        void shouldAcceptHttpIssuer() {
+            var config = builderWithIssuer("http://localhost:8080/auth").allowInsecureHttp(true).build();
+
+            assertEquals("http://localhost:8080/auth", config.getIssuer(),
+                    "a plaintext http issuer remains constructible for local test setups");
+        }
+
+        @Test
+        @DisplayName("Should reject a blank scope entry that would otherwise serialise into the scope parameter")
+        void shouldRejectBlankScopeEntry() {
+            var blankScope = builderWithIssuer(issuer()).scope("openid").scope("   ");
+
+            assertThrows(IllegalArgumentException.class, blankScope::build,
+                    "a blank scope would serialise as stray whitespace in the scope parameter");
+        }
+
+        @Test
+        @DisplayName("Should reject a null scope entry that would otherwise serialise as the literal \"null\"")
+        void shouldRejectNullScopeEntry() {
+            var scopes = new ArrayList<String>();
+            scopes.add("openid");
+            scopes.add(null);
+            var nullScope = builderWithIssuer(issuer()).scopes(scopes);
+
+            assertThrows(IllegalArgumentException.class, nullScope::build,
+                    "a null scope would serialise as the literal \"null\" in the scope parameter");
         }
     }
 }
