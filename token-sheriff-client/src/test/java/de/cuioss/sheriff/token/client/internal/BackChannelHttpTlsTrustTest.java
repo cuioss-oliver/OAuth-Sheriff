@@ -106,6 +106,37 @@ class BackChannelHttpTlsTrustTest {
                 "a non-HTTP scheme must be refused as the declared transport failure");
     }
 
+    @Test
+    @DisplayName("Should not let a cleartext endpoint seed the client a TLS endpoint reuses (CLIENT-23)")
+    void shouldNotShareClientAcrossSchemes() {
+        // An insecure-http-permitting client with pinned trust material: the only configuration in
+        // which validatedHandler can legitimately produce handlers of two different schemes.
+        var configured = freshSslContext();
+        var backChannel = new BackChannelHttp(configurationBuilder()
+                .sslContext(configured)
+                .allowInsecureHttp(true)
+                .build(), MAX_CONTENT_SIZE);
+
+        // The cleartext endpoint is reached FIRST, so it is the one that would seed a single shared
+        // client. cui-http's HTTP path installs no SSLContext and no TLS-version pinning, so a client
+        // seeded from it carries no trust material at all.
+        var cleartextHandler = backChannel.validatedHandler("http://as.example.com/token", FAILURE_CONTEXT);
+        var cleartextClient = backChannel.sharedClient(cleartextHandler);
+
+        var tlsHandler = backChannel.validatedHandler(USERINFO_ENDPOINT, FAILURE_CONTEXT);
+        var tlsClient = backChannel.sharedClient(tlsHandler);
+
+        assertAll("the TLS endpoint must not inherit the cleartext endpoint's trust-free client",
+                () -> assertNotSame(cleartextClient, tlsClient,
+                        "a cleartext-seeded client must never be reused for a TLS endpoint — doing so drops the "
+                                + "configured trust anchor and widens validation back to the JVM default CA set"),
+                () -> assertSame(configured, tlsHandler.getSslContext(),
+                        "the TLS handler must still carry the configured trust material"),
+                () -> assertSame(tlsClient, backChannel.sharedClient(
+                        backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT)),
+                        "two TLS endpoints on one configuration must still share a pooled client"));
+    }
+
     private static BackChannelHttp backChannelWith(SSLContext sslContext) {
         return new BackChannelHttp(configurationBuilder().sslContext(sslContext).build(), MAX_CONTENT_SIZE);
     }

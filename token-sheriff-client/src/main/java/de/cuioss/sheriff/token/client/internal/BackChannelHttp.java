@@ -29,8 +29,10 @@ import javax.net.ssl.SSLContext;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
+import java.util.Locale;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Shared back-channel transport control for the OIDC/OAuth endpoint clients.
@@ -77,7 +79,7 @@ public final class BackChannelHttp {
     private final ClientConfiguration configuration;
     private final HttpSecurityValidator egressValidator;
     private final int maxContentSize;
-    private final AtomicReference<HttpClient> sharedClient = new AtomicReference<>();
+    private final ConcurrentMap<String, HttpClient> sharedClients = new ConcurrentHashMap<>();
 
     /**
      * @param configuration  the client configuration carrying the TLS policy and timeout knobs; must
@@ -145,25 +147,29 @@ public final class BackChannelHttp {
 
     /**
      * Returns the shared {@link HttpClient} for this helper instance, building it once (lazily,
-     * thread-safely) from the given already-validated handler and reusing it for every subsequent
-     * request. All endpoints for one authorization server share the same TLS trust, so a single client
-     * is correct for every back-channel call.
+     * thread-safely) per endpoint scheme and reusing it for every subsequent request to that scheme.
+     * <p>
+     * The client is keyed by scheme rather than being a single instance because
+     * {@link HttpClient} bakes its TLS material in at construction: cui-http's {@code HttpHandler}
+     * installs the {@link SSLContext} and the TLS 1.2/1.3 {@code SSLParameters} pinning only on its
+     * HTTPS path. A single cached client seeded by whichever handler happened to be built first
+     * would therefore let a cleartext endpoint — reachable only when
+     * {@link ClientConfiguration#allowInsecureHttp} is set — seed a client carrying no trust
+     * material, which a later {@code https://} endpoint would then silently reuse. That would drop
+     * the configured per-client trust anchor and widen validation back to the JVM default CA set,
+     * breaking the CLIENT-23 guarantee that the configured {@link SSLContext} applies to
+     * <em>every</em> call. Keying by scheme keeps connection pooling while making that
+     * cross-scheme bleed structurally impossible.
      *
      * @param handler an already-validated handler whose SSL context and connect timeout seed the client
-     * @return the shared, reused {@link HttpClient}
+     * @return the shared, reused {@link HttpClient} for this handler's scheme
      */
     public HttpClient sharedClient(HttpHandler handler) {
-        HttpClient client = sharedClient.get();
-        if (client == null) {
-            synchronized (this) {
-                client = sharedClient.get();
-                if (client == null) {
-                    client = handler.createHttpClient();
-                    sharedClient.set(client);
-                }
-            }
-        }
-        return client;
+        Objects.requireNonNull(handler, "handler must not be null");
+        String scheme = handler.getUri().getScheme();
+        return sharedClients.computeIfAbsent(
+                scheme == null ? "" : scheme.toLowerCase(Locale.ROOT),
+                unusedKey -> handler.createHttpClient());
     }
 
     /**
