@@ -26,7 +26,9 @@ itself a BFF.
 Organized by package under `de.cuioss.sheriff.token.client`:
 
 * *Discovery* (`discovery`) — OIDC provider-metadata resolution (`DiscoveryResolver`,
-  `ProviderMetadata`) with TLS enforcement and issuer verification.
+  `ProviderMetadata`) with TLS enforcement and issuer verification, over an optional
+  per-client TLS trust seam (`ClientConfiguration.sslContext`) shared by every discovery and
+  back-channel call.
 * *Flows* (`flow`) — authorization-code flow with mandatory PKCE `S256`
   (`AuthorizationCodeFlow`, `PkceChallenge`), client-credentials (`ClientCredentialsFlow`)
   and refresh (`RefreshFlow`) grants, pushed authorization requests (`ParClient`, RFC 9126),
@@ -64,8 +66,15 @@ ClientConfiguration config = ClientConfiguration.builder()
     .clientSecret(secret)
     .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
     .scope("openid")
+    .sslContext(sslContext) // <1>
     .build();
 ----
+<1> Optional. Supply an `SSLContext` when the authorization server presents a private-CA or
+self-signed certificate: the trust is scoped to this one client, so no process-global
+`javax.net.ssl.trustStore` override is needed. Omit it — the default — and the JVM / cui-http
+default truststore applies. When present, the context is used for every discovery and
+back-channel call this client makes (`CLIENT-23`); it selects trust material only and does not
+relax the TLS protocol floor.
 
 Endpoints are resolved via OIDC discovery against
 `{issuer}/.well-known/openid-configuration`. See the

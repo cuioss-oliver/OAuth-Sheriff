@@ -226,6 +226,25 @@ TLS enforcement owned by commons (`COMMONS-2`).
 
 * Source: https://www.rfc-editor.org/rfc/rfc9700#section-4.3[RFC 9700 §4.3] (credentials in URLs), https://www.rfc-editor.org/rfc/rfc9207[RFC 9207], https://www.rfc-editor.org/rfc/rfc6749#section-5.1[RFC 6749 §5.1] (token response).
 
+[#CLIENT-23]
+=== CLIENT-23: Optional per-client outbound TLS trust
+
+The engine MUST accept an *optional per-client outbound `SSLContext`* on its client
+configuration and MUST apply it to *every* discovery and back-channel call that client issues
+(discovery, token, userinfo, revocation, PAR). This is the supported way to trust a private-CA
+or self-signed authorization server: the trust is scoped to the one client instead of being
+forced onto the whole JVM through a process-global `javax.net.ssl.trustStore` override, so two
+clients in the same process may trust two different authorization servers. When no context is
+configured the commons transport default applies unchanged, and the TLS floor
+(<<CLIENT-14>>, `COMMONS-2`) still governs the connection — a supplied context selects *trust
+material*, it does not relax the protocol policy. This mirrors the validation-side analogue
+`HttpJwksLoaderConfig.sslContext()`, so both sides of the product configure private-CA trust the
+same way. The low-level TLS context primitive itself remains owned by commons (see
+<<_aspect_separation_and_what_is_referenced_not_duplicated>>); this requirement is only the
+client-side seam that hands the caller's context to that primitive.
+
+* Source: xref:../commons/requirements.adoc[commons] (`COMMONS-2`, `cui-http` `HttpHandler.sslContext()`), https://www.rfc-editor.org/rfc/rfc9700#section-2.6[RFC 9700 §2.6] (TLS on every outbound request).
+
 == Token requirements
 
 _The server-side lifecycle delta on top of the validation module — storage, refresh,
@@ -412,6 +431,7 @@ sourced xref:best-practices.adoc[best-practices] checklist, and realized in a sp
 | CLIENT-12 | T-STEPUP | xref:specification/step-up-and-logout.adoc[step-up-and-logout]
 | CLIENT-13 | T-LOGOUT | step-up-and-logout
 | CLIENT-14 | T-URL-LEAK, T-TLS-TOKEN (delegated) | retrieval-flow
+| CLIENT-23 | T-TLS-TOKEN (per-client trust material for the delegated TLS primitive) | retrieval-flow
 | CLIENT-15 | T-AUD-CONFUSION | xref:specification/token-handling.adoc[token-handling]
 | CLIENT-16 | T-IDTOKEN-INTEGRITY | token-handling
 | CLIENT-17 | T-REFRESH-THEFT, T-LOGOUT | token-handling
