@@ -243,6 +243,16 @@ same way. The low-level TLS context primitive itself remains owned by commons (s
 <<_aspect_separation_and_what_is_referenced_not_duplicated>>); this requirement is only the
 client-side seam that hands the caller's context to that primitive.
 
+A supplied context is applied verbatim, so it MUST perform full certificate-chain validation —
+a trust-all `TrustManager` disables server authentication for every credential-bearing
+back-channel request. The seam narrows trust to a known CA; it does not weaken verification.
+
+The scope is the client engine's own calls. JWKS retrieval for token *validation* runs through
+the validation module's `HttpJwksLoaderConfig`, which carries an independent `sslContext()` this
+requirement does not feed. Against a private-CA authorization server both MUST be configured;
+otherwise token retrieval succeeds and validation then fails the JWKS fetch, and the natural
+workaround is exactly the process-global truststore override this requirement exists to avoid.
+
 * Source: xref:../commons/requirements.adoc[commons] (`COMMONS-2`, `cui-http` `HttpHandler.sslContext()`), https://www.rfc-editor.org/rfc/rfc9700#section-2.6[RFC 9700 §2.6] (TLS on every outbound request).
 
 == Token requirements

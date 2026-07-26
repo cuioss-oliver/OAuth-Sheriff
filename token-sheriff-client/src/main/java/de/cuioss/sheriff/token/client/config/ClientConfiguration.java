@@ -144,6 +144,23 @@ public class ClientConfiguration {
      * {@link SSLContext} has identity semantics and no useful string form, mirroring how
      * {@code HttpJwksLoaderConfig} excludes its {@code HttpHandler}. Two configurations that differ only
      * in their {@code sslContext} therefore remain equal.
+     * <p>
+     * <strong>Reload consequence of that exclusion:</strong> a configuration diff cannot see a trust
+     * rotation. Rebuilding this configuration with a new {@code SSLContext} and otherwise identical
+     * values compares {@code equal} to the previous one, so the common
+     * {@code if (!newConfig.equals(current)) rebuild()} reload idiom will not rebuild and the engine
+     * keeps validating against the retired trust anchor until the process restarts. Trigger the rebuild
+     * on the rotation event itself rather than on a configuration diff.
+     * <p>
+     * <strong>The supplied context MUST perform full certificate-chain validation.</strong> It is
+     * applied verbatim — a trust-all {@code TrustManager} silently disables server authentication for
+     * every credential-bearing back-channel request. This field narrows trust to a known CA; it is not
+     * a mechanism for skipping verification.
+     * <p>
+     * <strong>Scope:</strong> this covers the calls the client engine issues (discovery, token,
+     * userinfo, revocation, PAR). JWKS retrieval for token validation runs through
+     * {@code HttpJwksLoaderConfig} and carries its own independent {@code sslContext()}, which must be
+     * configured alongside this one against a private-CA authorization server.
      */
     @Nullable
     @ToString.Exclude
