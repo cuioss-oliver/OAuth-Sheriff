@@ -18,7 +18,7 @@ permissions:
 jobs:
   integration-tests:
     # Multi-IDP tests (Keycloak + Dex + Zitadel) — superset that includes standard integration tests
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@ab447694b019d30edc56f2ff7c5100ba731ca590 # v0.15.3
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@b42917c5ac86d3c6cff290b3107b384c3d1a6fb2 # v0.15.4
     with:
       report-name: token-sheriff-multi-idp-tests
       maven-args-input: |
