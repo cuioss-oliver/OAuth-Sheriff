@@ -25,6 +25,7 @@ import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.tools.logging.CuiLogger;
 
+import javax.net.ssl.SSLContext;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
@@ -50,6 +51,11 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><strong>Scheme / TLS control:</strong> a non-TLS ({@code http://}) endpoint is refused unless
  *       {@link ClientConfiguration#allowInsecureHttp} is set, via the {@link HttpHandler} builder's
  *       own TLS enforcement.</li>
+ *   <li><strong>Per-client TLS trust:</strong> the {@link ClientConfiguration#getSslContext() configured
+ *       SSLContext}, when present, is applied to every endpoint handler this helper produces — so all
+ *       five endpoint clients sharing one {@code ClientConfiguration} trust the same authorization
+ *       server, without a process-global {@code javax.net.ssl.trustStore} override. When absent, the
+ *       cui-http / JVM default truststore is used.</li>
  *   <li><strong>Consistent transport typing (M9):</strong> a malformed or non-TLS endpoint surfaces as
  *       the declared {@link TransportException}, never a raw {@link IllegalArgumentException} leaking
  *       from {@code HttpHandler.build()}.</li>
@@ -100,12 +106,16 @@ public final class BackChannelHttp {
         Objects.requireNonNull(endpointUrl, "endpointUrl must not be null");
         applyEgressControl(endpointUrl, failureContext);
         try {
-            return HttpHandler.builder()
+            HttpHandler.HttpHandlerBuilder builder = HttpHandler.builder()
                     .url(endpointUrl)
                     .connectionTimeoutSeconds(configuration.getConnectTimeoutSeconds())
                     .readTimeoutSeconds(configuration.getReadTimeoutSeconds())
-                    .allowInsecureHttp(configuration.isAllowInsecureHttp())
-                    .build();
+                    .allowInsecureHttp(configuration.isAllowInsecureHttp());
+            SSLContext sslContext = configuration.getSslContext();
+            if (sslContext != null) {
+                builder.sslContext(sslContext);
+            }
+            return builder.build();
         } catch (IllegalArgumentException e) {
             // M9: a non-TLS / malformed endpoint must surface as the declared transport failure, not a
             // raw IllegalArgumentException leaking from the handler builder.

@@ -21,11 +21,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import javax.net.ssl.SSLContext;
+
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -222,6 +226,88 @@ class ClientConfigurationTest {
                         "the excluded field is not even named in the string representation"),
                 () -> assertTrue(rendered.contains(clientId),
                         "non-secret fields remain visible for diagnostics"));
+    }
+
+    @Nested
+    @DisplayName("Per-client TLS trust (sslContext)")
+    class SslContextTest {
+
+        @Test
+        @DisplayName("Should leave the SSL context absent when the builder never sets one")
+        void shouldDefaultToAbsentSslContext() {
+            var config = minimalBuilder().build();
+
+            assertNull(config.getSslContext(),
+                    "an unconfigured sslContext means 'use the cui-http / JVM default truststore'");
+        }
+
+        @Test
+        @DisplayName("Should return the supplied SSL context identically — trust material is never copied")
+        void shouldReturnSuppliedSslContextIdentically() {
+            var supplied = defaultSslContext();
+
+            var config = minimalBuilder().sslContext(supplied).build();
+
+            assertSame(supplied, config.getSslContext(),
+                    "the caller's trust material must reach the transport unchanged");
+        }
+
+        @Test
+        @DisplayName("Should exclude the SSL context from toString so a dump cannot expose the trust material")
+        void shouldExcludeSslContextFromToString() {
+            var supplied = defaultSslContext();
+            var config = minimalBuilder().sslContext(supplied).build();
+
+            String rendered = config.toString();
+
+            assertAll("sslContext never appears in the string representation",
+                    () -> assertFalse(rendered.contains(supplied.toString()),
+                            "the SSLContext's own string form must not be rendered"),
+                    () -> assertFalse(rendered.contains("sslContext"),
+                            "the excluded field is not even named in the string representation"));
+        }
+
+        @Test
+        @DisplayName("Should keep two configurations equal when they differ only in their SSL context")
+        void shouldIgnoreSslContextForEquality() {
+            var issuer = issuer();
+            var clientId = Generators.nonBlankStrings().next();
+            var withDefaultTrust = ClientConfiguration.builder()
+                    .issuer(issuer).clientId(clientId).authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                    .sslContext(defaultSslContext()).build();
+            var withPrivateTrust = ClientConfiguration.builder()
+                    .issuer(issuer).clientId(clientId).authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                    .sslContext(freshSslContext()).build();
+            var withoutTrust = ClientConfiguration.builder()
+                    .issuer(issuer).clientId(clientId).authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).build();
+
+            // An SSLContext has identity semantics and no value form, so it is deliberately excluded
+            // from the generated equals/hashCode — configurations stay comparable by their value fields.
+            assertAll("sslContext is excluded from value equality by design",
+                    () -> assertEquals(withDefaultTrust, withPrivateTrust),
+                    () -> assertEquals(withDefaultTrust.hashCode(), withPrivateTrust.hashCode()),
+                    () -> assertEquals(withDefaultTrust, withoutTrust),
+                    () -> assertEquals(withDefaultTrust.hashCode(), withoutTrust.hashCode()));
+        }
+
+        private ClientConfiguration.ClientConfigurationBuilder minimalBuilder() {
+            return ClientConfiguration.builder()
+                    .issuer(issuer())
+                    .clientId(Generators.nonBlankStrings().next())
+                    .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC);
+        }
+    }
+
+    static SSLContext defaultSslContext() {
+        return assertDoesNotThrow(SSLContext::getDefault);
+    }
+
+    static SSLContext freshSslContext() {
+        return assertDoesNotThrow(() -> {
+            var context = SSLContext.getInstance("TLSv1.3");
+            context.init(null, null, null);
+            return context;
+        });
     }
 
     @Nested
