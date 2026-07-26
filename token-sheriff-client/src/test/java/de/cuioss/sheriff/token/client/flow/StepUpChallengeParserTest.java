@@ -198,5 +198,30 @@ class StepUpChallengeParserTest {
             assertTrue(parser.parse(header).isEmpty(),
                     "a challenge left with no constraint at all is not actionable");
         }
+
+        @Test
+        @DisplayName("Should ignore a challenge whose only constraint is a blank acr_values (H1)")
+        void shouldIgnoreChallengeWithOnlyBlankAcrValues() {
+            String header = CHALLENGE_PREFIX + ", acr_values=\"   \"";
+
+            assertTrue(parser.parse(header).isEmpty(),
+                    "a blank acr_values names no value, so the challenge constrains nothing and must not "
+                            + "be actionable — an actionable-but-unverifiable challenge is the fail-open "
+                            + "shape H1 forbids");
+        }
+
+        @Test
+        @DisplayName("Should drop a blank acr_values while keeping the max_age constraint")
+        void shouldDropBlankAcrValuesKeepingMaxAge() {
+            String header = CHALLENGE_PREFIX + ", acr_values=\"  \", max_age=\"300\"";
+
+            var challenge = parseRequired(header);
+
+            assertAll("blank acr_values",
+                    () -> assertTrue(challenge.getAcrValues().isEmpty(),
+                            "a blank acr_values constrains nothing and is dropped"),
+                    () -> assertEquals(Optional.of(300), challenge.getMaxAge(),
+                            "dropping acr_values must not discard the max_age constraint"));
+        }
     }
 }

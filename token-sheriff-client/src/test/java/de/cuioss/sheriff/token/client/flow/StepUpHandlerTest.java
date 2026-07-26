@@ -285,13 +285,15 @@ class StepUpHandlerTest {
         }
 
         @Test
-        @DisplayName("Should treat a whitespace-only acr_values challenge as constraining nothing")
-        void shouldAcceptWhenAcrValuesConstrainNothing() {
+        @DisplayName("Should reject a whitespace-only acr_values challenge rather than verify nothing (H1)")
+        void shouldRejectWhenAcrValuesConstrainNothing() {
             var challenge = new StepUpChallenge("   ", null);
             var idToken = idToken(WEAK_ACR, Instant.now().getEpochSecond());
 
-            assertDoesNotThrow(() -> stepUpHandler.verifyResult(challenge, idToken),
-                    "a challenge listing no actual acr value cannot be violated by any acr");
+            assertThrows(ClientProtocolException.class,
+                    () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "a constraint that names no acr value cannot be evaluated, so it must fail closed — "
+                            + "returning normally would report a weak authentication as an elevated one");
         }
 
         @Test

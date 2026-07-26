@@ -71,7 +71,12 @@ public class StepUpChallengeParser {
         if (!INSUFFICIENT_USER_AUTHENTICATION.equals(params.get("error"))) {
             return Optional.empty();
         }
-        String acrValues = params.get("acr_values");
+        // Blank-normalise acr_values exactly as parseMaxAge already does for max_age: a whitespace-only
+        // value constrains nothing, so treating it as present would make the challenge actionable while
+        // leaving StepUpResultVerifier with no constraint to check — verify() would then return normally
+        // having verified nothing, and a caller reading that as proof of elevation would grant a
+        // privileged operation on an unelevated authentication. Fail closed instead (CLIENT-12 / H1).
+        String acrValues = blankToNull(params.get("acr_values"));
         Integer maxAge = parseMaxAge(params.get("max_age"));
         if (acrValues == null && maxAge == null) {
             LOGGER.debug("Ignoring step-up challenge without acr_values or max_age");
@@ -139,6 +144,10 @@ public class StepUpChallengeParser {
         }
         parts.add(current.toString());
         return parts;
+    }
+
+    private static @Nullable String blankToNull(@Nullable String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private static @Nullable Integer parseMaxAge(@Nullable String value) {
