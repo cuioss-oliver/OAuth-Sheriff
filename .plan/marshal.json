@@ -102,7 +102,7 @@
           "re_review_on_timeout": "ask",
           "review_rate_window_await": false,
           "review_rate_window_timeout_seconds": 3600,
-          "enabled_bots": "coderabbit,sourcery,gemini",
+          "enabled_bots": "coderabbit,sourcery,pr-agent",
           "review_completion_poll_timeout_seconds": 600,
           "lane": "ask"
         },
