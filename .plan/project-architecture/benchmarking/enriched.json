@@ -28,7 +28,11 @@
           "description": "Core Java patterns including modern features and performance optimization",
           "skill": "pm-dev-java:java-core"
         },
-        "pm-dev-java-cui:cui-logging"
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 build-dispatch routes builds through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "module_testing": {
@@ -53,7 +57,11 @@
           "description": "JUnit 5 testing patterns with AAA structure, coverage analysis, and assertion standards",
           "skill": "pm-dev-java:junit-core"
         },
-        "pm-dev-java-cui:cui-logging"
+        "pm-dev-java-cui:cui-logging",
+        {
+          "description": "marshalld build-server consumption client (submit/wait/ping/preflight) \u2014 test-run dispatch routes through the daemon when the project is registered, else falls back in-process",
+          "skill": "plan-marshall:build-server-client"
+        }
       ]
     },
     "quality": {
@@ -87,6 +95,6 @@
       ]
     }
   },
-  "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals",
+  "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals; Repopulate skills_by_profile after phase-4 Q-Gate finding f9f1e9: documentation module lacked the implementation profile key declared by pm-documents",
   "tips": []
 }

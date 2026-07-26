@@ -29,8 +29,28 @@
           "skill": "pm-documents:ref-svg-diagrams"
         }
       ]
+    },
+    "implementation": {
+      "defaults": [
+        {
+          "description": "AsciiDoc formatting, validation, link verification, and template creation",
+          "skill": "pm-documents:ref-asciidoc"
+        },
+        {
+          "description": "Content quality, tone analysis, organization standards, and review orchestration",
+          "skill": "pm-documents:ref-documentation"
+        },
+        {
+          "description": "Narrative styles for technical documentation \u2014 tone, voice, and arc for the engineering-narrative style",
+          "skill": "pm-documents:ref-narrative-styles"
+        },
+        {
+          "description": "SVG diagram authoring standards \u2014 visual language, theme handling, AsciiDoc embedding, per-diagram-type patterns",
+          "skill": "pm-documents:ref-svg-diagrams"
+        }
+      ]
     }
   },
-  "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals",
+  "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals; Repopulate skills_by_profile after phase-4 Q-Gate finding f9f1e9: documentation module lacked the implementation profile key declared by pm-documents",
   "tips": []
 }
