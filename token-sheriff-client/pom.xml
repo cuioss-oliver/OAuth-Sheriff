@@ -198,6 +198,21 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Exclude the DSL-JSON annotation processor's generated converters from coverage measurement.
+                 The processor emits _<Type>_DslJsonConverter classes straight into target/classes with no
+                 counterpart under src/main/java, so their branches measure the DSL-JSON code generator rather
+                 than project code. The pattern is anchored to the processor's fixed _<Type>_DslJsonConverter
+                 naming so it cannot silently swallow hand-written classes. The configuration sits at plugin
+                 level so it applies to both the report and check goals inherited from the cuioss parent. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>**/_*_DslJsonConverter*.class</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 

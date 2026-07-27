@@ -70,7 +70,13 @@ public class StepUpResultVerifier {
                 .filter(value -> !value.isBlank())
                 .collect(Collectors.toSet());
         if (required.isEmpty()) {
-            return;
+            // Fail closed (H1): the challenge asked for an acr constraint, but it parses to no actual
+            // value — so there is nothing to check. Returning normally here would report "verified" to a
+            // caller that reads a normal return as proof of elevation, granting a privileged operation on
+            // an unelevated authentication. A constraint we cannot evaluate is a rejection, not a pass.
+            throw new ClientProtocolException(
+                    "step-up challenge carries an 'acr_values' constraint that names no value; "
+                            + "the required step-up cannot be verified");
         }
         ClaimValue acrClaim = idToken.getClaims().get(CLAIM_ACR);
         String actualAcr = acrClaim == null ? null : acrClaim.getOriginalString();

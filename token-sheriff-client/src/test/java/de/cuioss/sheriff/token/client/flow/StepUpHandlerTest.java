@@ -32,12 +32,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -235,6 +238,22 @@ class StepUpHandlerTest {
             return holder.asIdTokenContent();
         }
 
+        private IdTokenContent idTokenWithout(String claimName) {
+            TestTokenHolder holder = TestTokenGenerators.idTokens().next();
+            holder.withClaim("acr", ClaimValue.forPlainString(ACR));
+            holder.withClaim("auth_time",
+                    ClaimValue.forPlainString(Long.toString(Instant.now().getEpochSecond())));
+            holder.withoutClaim(claimName);
+            return holder.asIdTokenContent();
+        }
+
+        private IdTokenContent idTokenWithAuthTime(ClaimValue authTime) {
+            TestTokenHolder holder = TestTokenGenerators.idTokens().next();
+            holder.withClaim("acr", ClaimValue.forPlainString(ACR));
+            holder.withClaim("auth_time", authTime);
+            return holder.asIdTokenContent();
+        }
+
         @Test
         @DisplayName("Should accept a step-up satisfying both the required acr and max_age")
         void shouldAcceptSatisfiedStepUp() {
@@ -263,6 +282,84 @@ class StepUpHandlerTest {
 
             assertThrows(ClientProtocolException.class, () -> stepUpHandler.verifyResult(challenge, idToken),
                     "an authentication older than max_age must be rejected as stale");
+        }
+
+        @Test
+        @DisplayName("Should reject a whitespace-only acr_values challenge rather than verify nothing (H1)")
+        void shouldRejectWhenAcrValuesConstrainNothing() {
+            var challenge = new StepUpChallenge("   ", null);
+            var idToken = idToken(WEAK_ACR, Instant.now().getEpochSecond());
+
+            assertThrows(ClientProtocolException.class,
+                    () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "a constraint that names no acr value cannot be evaluated, so it must fail closed — "
+                            + "returning normally would report a weak authentication as an elevated one");
+        }
+
+        @Test
+        @DisplayName("Should reject a step-up whose ID token carries no acr claim at all (H1)")
+        void shouldRejectMissingAcrClaim() {
+            var challenge = new StepUpChallenge(ACR, null);
+            var idToken = idTokenWithout("acr");
+
+            assertThrows(ClientProtocolException.class, () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "an absent acr claim proves nothing about the authentication strength");
+        }
+
+        @Test
+        @DisplayName("Should reject a step-up whose acr claim is blank (H1)")
+        void shouldRejectBlankAcrClaim() {
+            var challenge = new StepUpChallenge(ACR, null);
+            var idToken = idToken("   ", Instant.now().getEpochSecond());
+
+            assertThrows(ClientProtocolException.class, () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "a blank acr claim proves nothing about the authentication strength");
+        }
+
+        @Test
+        @DisplayName("Should reject a step-up whose ID token carries no auth_time claim (H2)")
+        void shouldRejectMissingAuthTimeClaim() {
+            var challenge = new StepUpChallenge(null, 300);
+            var idToken = idTokenWithout("auth_time");
+
+            assertThrows(ClientProtocolException.class, () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "freshness cannot be verified without an auth_time claim");
+        }
+
+        @Test
+        @DisplayName("Should reject a step-up whose auth_time is blank (H2)")
+        void shouldRejectBlankAuthTime() {
+            var challenge = new StepUpChallenge(null, 300);
+            var idToken = idTokenWithAuthTime(ClaimValue.forPlainString("   "));
+
+            assertThrows(ClientProtocolException.class, () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "an empty auth_time cannot establish freshness");
+        }
+
+        @Test
+        @DisplayName("Should reject a step-up whose auth_time is not a numeric date (H2)")
+        void shouldRejectNonNumericAuthTime() {
+            var challenge = new StepUpChallenge(null, 300);
+            var idToken = idTokenWithAuthTime(ClaimValue.forPlainString("yesterday"));
+
+            var exception = assertThrows(ClientProtocolException.class,
+                    () -> stepUpHandler.verifyResult(challenge, idToken),
+                    "a non-numeric auth_time cannot establish freshness");
+
+            assertInstanceOf(NumberFormatException.class, exception.getCause(),
+                    "the parse failure is preserved as the cause");
+        }
+
+        @Test
+        @DisplayName("Should accept a typed DATETIME auth_time without falling back to string parsing")
+        void shouldAcceptTypedDateTimeAuthTime() {
+            var authTime = OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(30);
+            var challenge = new StepUpChallenge(null, 300);
+            var idToken = idTokenWithAuthTime(
+                    ClaimValue.forDateTime("not-a-number", authTime));
+
+            assertDoesNotThrow(() -> stepUpHandler.verifyResult(challenge, idToken),
+                    "a typed auth_time is read from the parsed value, never from its original string");
         }
     }
 }

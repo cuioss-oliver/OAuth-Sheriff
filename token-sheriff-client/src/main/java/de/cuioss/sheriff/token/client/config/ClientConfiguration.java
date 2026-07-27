@@ -16,12 +16,14 @@
 package de.cuioss.sheriff.token.client.config;
 
 import lombok.Builder;
+import lombok.EqualsAndHashCode;
 import lombok.NonNull;
 import lombok.Singular;
 import lombok.ToString;
 import lombok.Value;
 import org.jspecify.annotations.Nullable;
 
+import javax.net.ssl.SSLContext;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.List;
@@ -129,6 +131,43 @@ public class ClientConfiguration {
     int readTimeoutSeconds = DEFAULT_READ_TIMEOUT_SECONDS;
 
     /**
+     * The per-client outbound TLS trust material, applied to every discovery and back-channel call this
+     * client issues, or {@code null} to use the cui-http / JVM default truststore (the behaviour when the
+     * field is not configured).
+     * <p>
+     * This is the client-side analogue of {@code HttpJwksLoaderConfig.sslContext()} on the validation
+     * side, and it is the supported way to trust a private-CA or self-signed authorization server: the
+     * trust is scoped to this one client instead of being forced onto the whole JVM through a
+     * process-global {@code javax.net.ssl.trustStore} override.
+     * <p>
+     * Excluded from {@code toString()} and from the generated {@code equals}/{@code hashCode} — an
+     * {@link SSLContext} has identity semantics and no useful string form, mirroring how
+     * {@code HttpJwksLoaderConfig} excludes its {@code HttpHandler}. Two configurations that differ only
+     * in their {@code sslContext} therefore remain equal.
+     * <p>
+     * <strong>Reload consequence of that exclusion:</strong> a configuration diff cannot see a trust
+     * rotation. Rebuilding this configuration with a new {@code SSLContext} and otherwise identical
+     * values compares {@code equal} to the previous one, so the common
+     * {@code if (!newConfig.equals(current)) rebuild()} reload idiom will not rebuild and the engine
+     * keeps validating against the retired trust anchor until the process restarts. Trigger the rebuild
+     * on the rotation event itself rather than on a configuration diff.
+     * <p>
+     * <strong>The supplied context MUST perform full certificate-chain validation.</strong> It is
+     * applied verbatim — a trust-all {@code TrustManager} silently disables server authentication for
+     * every credential-bearing back-channel request. This field narrows trust to a known CA; it is not
+     * a mechanism for skipping verification.
+     * <p>
+     * <strong>Scope:</strong> this covers the calls the client engine issues (discovery, token,
+     * userinfo, revocation, PAR). JWKS retrieval for token validation runs through
+     * {@code HttpJwksLoaderConfig} and carries its own independent {@code sslContext()}, which must be
+     * configured alongside this one against a private-CA authorization server.
+     */
+    @Nullable
+    @ToString.Exclude
+    @EqualsAndHashCode.Exclude
+    SSLContext sslContext;
+
+    /**
      * All-args constructor invoked by the Lombok-generated builder. It validates the configuration at
      * construction so a malformed client can never be built and later fail obscurely on the wire:
      * {@code issuer} and {@code clientId} must be non-blank, {@code issuer} must be a well-formed
@@ -146,7 +185,8 @@ public class ClientConfiguration {
     @SuppressWarnings("java:S107")
     ClientConfiguration(@NonNull String issuer, @NonNull String clientId, @Nullable String clientSecret,
             @NonNull ClientAuthMethod authMethod, List<String> scopes, @Nullable String redirectUri,
-            boolean allowInsecureHttp, int connectTimeoutSeconds, int readTimeoutSeconds) {
+            boolean allowInsecureHttp, int connectTimeoutSeconds, int readTimeoutSeconds,
+            @Nullable SSLContext sslContext) {
         this.issuer = requireNonBlank(issuer, "issuer");
         validateIssuerUrl(this.issuer);
         this.clientId = requireNonBlank(clientId, "clientId");
@@ -157,6 +197,8 @@ public class ClientConfiguration {
         this.allowInsecureHttp = allowInsecureHttp;
         this.connectTimeoutSeconds = requirePositive(connectTimeoutSeconds, "connectTimeoutSeconds");
         this.readTimeoutSeconds = requirePositive(readTimeoutSeconds, "readTimeoutSeconds");
+        // No validation: null means "use the cui-http / JVM default truststore", the unconfigured default.
+        this.sslContext = sslContext;
     }
 
     /**

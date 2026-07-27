@@ -129,4 +129,24 @@ class ProviderMetadataTest {
                 () -> assertFalse(empty.getRevocationEndpoint().isPresent()),
                 () -> assertFalse(empty.getIntrospectionEndpoint().isPresent()));
     }
+
+    @Test
+    @DisplayName("Should treat an advertised-but-empty capability as unsupported rather than supported")
+    void shouldTreatEmptyAdvertisedCapabilityAsUnsupported() {
+        // A discovery document may carry the key with an empty value; presence of the key alone must
+        // not be read as a usable capability, or the flow would target an empty endpoint URL.
+        var blankEndpoints = new ProviderMetadata();
+        blankEndpoints.pushedAuthorizationRequestEndpoint = "   ";
+        blankEndpoints.endSessionEndpoint = "";
+        var emptyDpop = new ProviderMetadata();
+        emptyDpop.dpopSigningAlgValuesSupported = List.of();
+
+        assertAll("advertised-but-empty capabilities",
+                () -> assertFalse(blankEndpoints.supportsPushedAuthorizationRequests(),
+                        "a blank PAR endpoint is not a usable PAR capability"),
+                () -> assertFalse(blankEndpoints.supportsEndSession(),
+                        "an empty end-session endpoint is not a usable logout capability"),
+                () -> assertFalse(emptyDpop.supportsDpop(),
+                        "an empty dpop_signing_alg_values_supported advertises no usable algorithm"));
+    }
 }
