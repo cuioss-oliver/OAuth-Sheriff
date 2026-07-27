@@ -158,9 +158,10 @@ class StoredTokenTest {
         void shouldRefuseDowngradeToBearer() {
             var binding = ConstraintBinding.dpop(token());
             var constrained = new StoredToken(token(), token(), token(), binding, Instant.now());
+            var newAccessToken = token();
 
             var exception = assertThrows(IllegalStateException.class,
-                    () -> constrained.refreshed(token(), null, null, null),
+                    () -> constrained.refreshed(newAccessToken, null, null, null),
                     "a sender-constrained bundle must not silently degrade to a bearer token");
 
             assertTrue(exception.getMessage().contains("cnf"),
@@ -173,9 +174,10 @@ class StoredTokenTest {
             var binding = ConstraintBinding.dpop(token());
             var otherBinding = ConstraintBinding.dpop(token());
             var constrained = new StoredToken(token(), token(), token(), binding, Instant.now());
+            var newAccessToken = token();
 
             assertThrows(IllegalStateException.class,
-                    () -> constrained.refreshed(token(), null, null, otherBinding),
+                    () -> constrained.refreshed(newAccessToken, null, null, otherBinding),
                     "a re-binding to a different key must fail closed");
         }
 
