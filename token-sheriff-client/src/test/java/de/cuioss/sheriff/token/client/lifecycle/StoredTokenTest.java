@@ -64,6 +64,17 @@ class StoredTokenTest {
                             () -> new StoredToken("   ", null, null, null, null),
                             "a whitespace-only access token is not a usable credential"));
         }
+
+        @Test
+        @DisplayName("Should reject a null access token via the separate requireNonNull guard")
+        void shouldRejectNullAccessToken() {
+            // Distinct from the blank cases above: the compact constructor guards null with
+            // Objects.requireNonNull (NullPointerException) before the isBlank check that raises
+            // IllegalArgumentException, so the two contracts need separate coverage.
+            assertThrows(NullPointerException.class,
+                    () -> new StoredToken(null, null, null, null, null),
+                    "a null access token is not a usable credential");
+        }
     }
 
     @Nested
