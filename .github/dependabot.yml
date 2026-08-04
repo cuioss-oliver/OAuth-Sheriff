@@ -19,11 +19,11 @@ updates:
     directory: /
     schedule:
       interval: daily
+    # Only `default-days`: the `semver-*-days` keys are rejected for the
+    # github-actions ecosystem, and one rejected key invalidates the whole file,
+    # which disables version updates for the entire repo.
     cooldown:
       default-days: 3
-      semver-major-days: 7
-      semver-minor-days: 3
-      semver-patch-days: 1
 
   - package-ecosystem: docker
     directory: "/token-sheriff-quarkus-parent/token-sheriff-quarkus-integration-tests"
@@ -34,11 +34,10 @@ updates:
     # doesn't scan compose files. Current versions in docker-compose.yml:
     # - quay.io/keycloak/keycloak:26.4.0
     # - prom/prometheus:v3.6.0
+    # Only `default-days`: as with github-actions above, the `semver-*-days` keys
+    # are rejected for the docker ecosystem and would invalidate the whole file.
     cooldown:
       default-days: 3
-      semver-major-days: 7
-      semver-minor-days: 3
-      semver-patch-days: 1
 
   - package-ecosystem: npm
     directory: "/token-sheriff-quarkus-parent/token-sheriff-validation-quarkus-deployment"
