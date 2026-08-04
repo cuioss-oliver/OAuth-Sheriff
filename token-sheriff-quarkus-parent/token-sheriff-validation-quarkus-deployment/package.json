@@ -36,7 +36,7 @@
     "@babel/core": "^7.29.7",
     "@babel/preset-env": "^7.29.7",
     "@eslint/js": "^10.0.1",
-    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/jest-dom": "^7.0.0",
     "babel-jest": "^30.4.0",
     "del-cli": "^7.0.0",
     "eslint": "^10.8.0",
