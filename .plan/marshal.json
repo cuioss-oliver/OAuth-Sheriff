@@ -102,9 +102,11 @@
           "re_review_on_timeout": "ask",
           "review_rate_window_await": false,
           "review_rate_window_timeout_seconds": 3600,
-          "enabled_bots": "coderabbit,sourcery,pr-agent",
           "review_completion_poll_timeout_seconds": 600,
-          "lane": "ask"
+          "lane": "ask",
+          "required_bots": "coderabbit,pr-agent",
+          "optional_bots": "sourcery",
+          "bot_lists_provenance": "answered"
         },
         "default:create-pr": {
           "lane": "minimal"
@@ -117,13 +119,6 @@
           "do_transition": false,
           "ce_wait_timeout_seconds": 600,
           "lane": "ask"
-        },
-        "default:lessons-capture": {
-          "lane": "minimal"
-        },
-        "default:finalize-step-preference-emitter": {
-          "preference_min_recurrence": 2,
-          "lane": "minimal"
         },
         "default:adr-propose": {
           "lane": "off"
@@ -138,6 +133,13 @@
           "use_merge_queue": true,
           "admin_merge_on_stuck_state": false,
           "pre_merge_comment_barrier": "fail_into_loopback",
+          "lane": "minimal"
+        },
+        "default:lessons-capture": {
+          "lane": "minimal"
+        },
+        "default:finalize-step-preference-emitter": {
+          "preference_min_recurrence": 2,
           "lane": "minimal"
         },
         "default:record-metrics": {
@@ -303,9 +305,11 @@
       "lessons_superseded_days": 0,
       "temp_on_maintenance": true,
       "plugin_cache_keep_versions": 5,
-      "plugin_cache_keep_days": 3
+      "plugin_cache_keep_days": 3,
+      "no_plan_body_days": 7,
+      "build_results_days": 5
     },
-    "provisioned_version": "0.1.1212",
-    "config_seed_fingerprint": "4e859c03"
+    "provisioned_version": "0.1.1293",
+    "config_seed_fingerprint": "714f8058"
   }
 }
