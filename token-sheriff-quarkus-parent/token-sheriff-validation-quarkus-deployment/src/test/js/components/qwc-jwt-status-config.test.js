@@ -115,17 +115,19 @@ class QwcJwtStatusConfig extends LitElement {
     return html`
       <div class="container">
         <div class="toolbar">
-          ${health
-            ? html`
-                <div
-                  class="health-indicator ${health.overallStatus === 'HEALTHY'
-                    ? 'health-healthy'
-                    : 'health-issues'}"
-                >
-                  ${health.overallStatus === 'HEALTHY' ? 'Healthy' : 'Issues Detected'}
-                </div>
-              `
-            : ''}
+          ${
+            health
+              ? html`
+                  <div
+                    class="health-indicator ${
+                      health.overallStatus === 'HEALTHY' ? 'health-healthy' : 'health-issues'
+                    }"
+                  >
+                    ${health.overallStatus === 'HEALTHY' ? 'Healthy' : 'Issues Detected'}
+                  </div>
+                `
+              : ''
+          }
           <button class="refresh-button" @click="${this._refresh}">Refresh</button>
         </div>
 
@@ -149,22 +151,24 @@ class QwcJwtStatusConfig extends LitElement {
                 <div class="metric-label">Overall Status</div>
                 <div class="metric-value">${status.status}</div>
               </div>
-              ${status.securityEvents
-                ? html`
-                    <div class="metric-card">
-                      <div class="metric-label">Total Security Events</div>
-                      <div class="metric-value">${status.securityEvents.totalEvents}</div>
-                    </div>
-                    <div class="metric-card">
-                      <div class="metric-label">Error Events</div>
-                      <div class="metric-value">${status.securityEvents.errorEvents}</div>
-                    </div>
-                    <div class="metric-card">
-                      <div class="metric-label">Warning Events</div>
-                      <div class="metric-value">${status.securityEvents.warningEvents}</div>
-                    </div>
-                  `
-                : ''}
+              ${
+                status.securityEvents
+                  ? html`
+                      <div class="metric-card">
+                        <div class="metric-label">Total Security Events</div>
+                        <div class="metric-value">${status.securityEvents.totalEvents}</div>
+                      </div>
+                      <div class="metric-card">
+                        <div class="metric-label">Error Events</div>
+                        <div class="metric-value">${status.securityEvents.errorEvents}</div>
+                      </div>
+                      <div class="metric-card">
+                        <div class="metric-label">Warning Events</div>
+                        <div class="metric-value">${status.securityEvents.warningEvents}</div>
+                      </div>
+                    `
+                  : ''
+              }
             </div>
           </div>
         </div>
