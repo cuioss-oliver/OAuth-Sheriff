@@ -9,7 +9,7 @@
     </parent>
     <groupId>de.cuioss.sheriff.token</groupId>
     <artifactId>token-sheriff-parent</artifactId>
-    <version>0.9.4</version>
+    <version>0.9.5-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Token-Sheriff Parent</name>
     <description>A comprehensive framework for validating OAuth/JWT tokens in multi-issuer environments.
@@ -33,7 +33,7 @@
         <developerConnection>
             scm:git:https://github.com/cuioss/TokenSheriff/
         </developerConnection>
-        <tag>0.9.4</tag>
+        <tag>HEAD</tag>
     </scm>
     <issueManagement>
         <url>https://github.com/cuioss/TokenSheriff/issues</url>
