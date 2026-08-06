@@ -57,6 +57,15 @@ public class ClientConfiguration {
     public static final int DEFAULT_READ_TIMEOUT_SECONDS = 10;
 
     /**
+     * Default byte ceiling for the OIDC discovery document, when the caller does not override it:
+     * 64&nbsp;KiB. Sized for what a discovery document actually is — a stock Keycloak realm already
+     * publishes upwards of 8&nbsp;KiB, and a document that enumerates a large
+     * {@code claims_supported} / {@code scopes_supported} set grows well past that — while still
+     * bounding the read so an unbounded response cannot be buffered.
+     */
+    public static final int DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE = 64 * 1024;
+
+    /**
      * The authorization server's issuer identifier URL (for example
      * {@code https://issuer.example.com/realms/demo}). Discovery is performed against
      * {@code {issuer}/.well-known/openid-configuration}. Must not be {@code null}.
@@ -131,6 +140,23 @@ public class ClientConfiguration {
     int readTimeoutSeconds = DEFAULT_READ_TIMEOUT_SECONDS;
 
     /**
+     * The maximum size, in bytes, of the authorization server's
+     * {@code .well-known/openid-configuration} response, enforced during the read. Defaults to
+     * {@value #DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE} bytes.
+     * <p>
+     * A discovery document is an unrelated artifact to a JWT payload and has its own size profile, so
+     * it carries its own ceiling rather than borrowing the JWT payload ceiling
+     * ({@code ParserConfig.getMaxPayloadSize()}, 8&nbsp;KiB) — a bound an ordinary Keycloak realm
+     * already exceeds, which failed discovery outright. Exposing it here also gives an embedder facing
+     * an unusually large document a deployment-side route that does not require a release.
+     * <p>
+     * Must be positive. Raising it widens how much of an authorization-server response is buffered;
+     * keep it as tight as the deployment's actual documents allow.
+     */
+    @Builder.Default
+    int discoveryDocumentMaxSize = DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE;
+
+    /**
      * The per-client outbound TLS trust material, applied to every discovery and back-channel call this
      * client issues, or {@code null} to use the cui-http / JVM default truststore (the behaviour when the
      * field is not configured).
@@ -186,7 +212,7 @@ public class ClientConfiguration {
     ClientConfiguration(@NonNull String issuer, @NonNull String clientId, @Nullable String clientSecret,
             @NonNull ClientAuthMethod authMethod, List<String> scopes, @Nullable String redirectUri,
             boolean allowInsecureHttp, int connectTimeoutSeconds, int readTimeoutSeconds,
-            @Nullable SSLContext sslContext) {
+            int discoveryDocumentMaxSize, @Nullable SSLContext sslContext) {
         this.issuer = requireNonBlank(issuer, "issuer");
         validateIssuerUrl(this.issuer);
         this.clientId = requireNonBlank(clientId, "clientId");
@@ -197,6 +223,7 @@ public class ClientConfiguration {
         this.allowInsecureHttp = allowInsecureHttp;
         this.connectTimeoutSeconds = requirePositive(connectTimeoutSeconds, "connectTimeoutSeconds");
         this.readTimeoutSeconds = requirePositive(readTimeoutSeconds, "readTimeoutSeconds");
+        this.discoveryDocumentMaxSize = requirePositive(discoveryDocumentMaxSize, "discoveryDocumentMaxSize");
         // No validation: null means "use the cui-http / JVM default truststore", the unconfigured default.
         this.sslContext = sslContext;
     }

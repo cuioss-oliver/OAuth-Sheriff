@@ -86,7 +86,8 @@ class TokenSheriffClientProducerTest {
                     ClientRuntimeConfig.AUTH_METHOD, ClientAuthMethod.CLIENT_SECRET_POST.getMetadataValue(),
                     ClientRuntimeConfig.SCOPES, "openid,profile,email",
                     ClientRuntimeConfig.REDIRECT_URI, REDIRECT_URI,
-                    ClientRuntimeConfig.ALLOW_INSECURE_HTTP, "true"));
+                    ClientRuntimeConfig.ALLOW_INSECURE_HTTP, "true",
+                    ClientRuntimeConfig.DISCOVERY_DOCUMENT_MAX_SIZE, "131072"));
 
             ClientConfiguration configuration = new TokenSheriffClientProducer(configOf(properties)).clientConfiguration();
 
@@ -99,7 +100,9 @@ class TokenSheriffClientProducerTest {
                     () -> assertEquals(List.of("openid", "profile", "email"), configuration.getScopes(),
                             "comma-separated scopes map to an ordered list"),
                     () -> assertEquals(REDIRECT_URI, configuration.getRedirectUri(), "redirectUri maps through"),
-                    () -> assertTrue(configuration.isAllowInsecureHttp(), "allowInsecureHttp maps through"));
+                    () -> assertTrue(configuration.isAllowInsecureHttp(), "allowInsecureHttp maps through"),
+                    () -> assertEquals(131072, configuration.getDiscoveryDocumentMaxSize(),
+                            "discoveryDocumentMaxSize maps through, so a large document needs no release"));
         }
 
         @Test
@@ -114,7 +117,10 @@ class TokenSheriffClientProducerTest {
                     () -> assertFalse(configuration.isAllowInsecureHttp(), "allowInsecureHttp defaults to false"),
                     () -> assertTrue(configuration.getScopes().isEmpty(), "scopes default to empty"),
                     () -> assertNull(configuration.getClientSecret(), "clientSecret is absent by default"),
-                    () -> assertNull(configuration.getRedirectUri(), "redirectUri is absent by default"));
+                    () -> assertNull(configuration.getRedirectUri(), "redirectUri is absent by default"),
+                    () -> assertEquals(ClientConfiguration.DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE,
+                            configuration.getDiscoveryDocumentMaxSize(),
+                            "discoveryDocumentMaxSize defaults to the discovery-document ceiling"));
         }
 
         @Test

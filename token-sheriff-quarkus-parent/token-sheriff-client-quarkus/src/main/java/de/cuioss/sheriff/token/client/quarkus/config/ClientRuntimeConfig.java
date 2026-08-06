@@ -80,4 +80,13 @@ public final class ClientRuntimeConfig {
      * Property: {@code sheriff.client.allow-insecure-http}. Defaults to {@code false}.
      */
     public static final String ALLOW_INSECURE_HTTP = PREFIX + ".allow-insecure-http";
+
+    /**
+     * The maximum size, in bytes, of the authorization server's discovery document. Property:
+     * {@code sheriff.client.discovery-document-max-size}. Defaults to
+     * {@link de.cuioss.sheriff.token.client.config.ClientConfiguration#DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE}.
+     * Raise it only for an authorization server whose {@code .well-known/openid-configuration} exceeds
+     * that ceiling.
+     */
+    public static final String DISCOVERY_DOCUMENT_MAX_SIZE = PREFIX + ".discovery-document-max-size";
 }

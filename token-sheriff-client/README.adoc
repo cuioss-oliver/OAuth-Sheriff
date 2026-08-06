@@ -67,6 +67,7 @@ ClientConfiguration config = ClientConfiguration.builder()
     .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
     .scope("openid")
     .sslContext(sslContext) // <1>
+    .discoveryDocumentMaxSize(128 * 1024) // <2>
     .build();
 ----
 <1> Optional. Supply an `SSLContext` when the authorization server presents a private-CA or
@@ -85,6 +86,13 @@ NOTE: The scope is this client engine only. JWKS retrieval for token *validation
 `HttpJwksLoaderConfig`, which carries its own independent `sslContext()`. Against a private-CA
 authorization server, configure both — otherwise token retrieval succeeds and validation then
 fails the JWKS fetch with a PKIX error.
+
+<2> Optional. The byte ceiling for the authorization server's discovery document, enforced during
+the read. Defaults to 64 KiB — a ceiling sized for a discovery document rather than borrowed from
+the 8 KiB JWT payload bound, which an ordinary Keycloak realm already exceeds. Raise it only for an
+authorization server whose `.well-known/openid-configuration` is larger still; it bounds how much
+of that response is buffered, so keep it as tight as the deployment's actual documents allow. Under
+Quarkus the same knob is `sheriff.client.discovery-document-max-size`.
 
 Endpoints are resolved via OIDC discovery against
 `{issuer}/.well-known/openid-configuration`. See the

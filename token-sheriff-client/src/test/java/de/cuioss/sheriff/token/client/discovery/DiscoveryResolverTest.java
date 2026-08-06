@@ -36,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.Optional;
 import java.util.Set;
 
@@ -140,43 +141,64 @@ class DiscoveryResolverTest {
 }
 
 /**
- * Verifies that the discovery fetch enforces the response size ceiling <em>during</em> the read (M7):
- * an oversized well-known document is rejected as a {@link TransportException} rather than being fully
- * buffered into memory before the cap is checked.
+ * Verifies the discovery document's own size ceiling
+ * ({@link ClientConfiguration#getDiscoveryDocumentMaxSize()}): a document larger than the 8&nbsp;KiB
+ * JWT payload bound the resolver used to borrow now resolves (issue #628), the ceiling is settable per
+ * client, and a document beyond the configured ceiling is still rejected as a
+ * {@link TransportException} <em>during</em> the read rather than being buffered whole (M7).
  */
 @EnableTestLogger
 @EnableGeneratorController
 @EnableMockWebServer
-@DisplayName("DiscoveryResolver enforces the response size cap during read")
+@DisplayName("DiscoveryResolver bounds the discovery document by its own configured ceiling")
 class DiscoveryResolverSizeCapTest {
 
-    @Getter
-    private final OversizedWellKnownDispatcher moduleDispatcher = new OversizedWellKnownDispatcher();
+    /** Larger than the 8 KiB JWT payload ceiling, smaller than the discovery-document default. */
+    private static final int OVER_PAYLOAD_CEILING_PADDING = 9 * 1024;
 
-    private static ClientConfiguration configFor(String issuer) {
+    @Getter
+    private final PaddedWellKnownDispatcher moduleDispatcher =
+            new PaddedWellKnownDispatcher(OVER_PAYLOAD_CEILING_PADDING);
+
+    private static ClientConfiguration.ClientConfigurationBuilder builderFor(String issuer) {
         return ClientConfiguration.builder()
                 .issuer(issuer)
                 .clientId(Generators.nonBlankStrings().next())
                 .clientSecret(Generators.nonBlankStrings().next())
                 .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
-                .allowInsecureHttp(true)
-                .build();
+                .allowInsecureHttp(true);
     }
 
     @Test
-    @DisplayName("Should reject an oversized discovery document as a TransportException")
-    void shouldRejectOversizedDiscoveryDocument(URIBuilder uriBuilder) {
-        var resolver = new DiscoveryResolver(configFor(uriBuilder.buildAsString()));
+    @DisplayName("Should resolve a document larger than the JWT payload ceiling at the default setting (#628)")
+    void shouldResolveDocumentLargerThanPayloadCeiling(URIBuilder uriBuilder) {
+        // Regression: a stock Keycloak realm publishes a document a few hundred bytes past 8 KiB, which
+        // the borrowed JWT payload ceiling rejected outright, taking every confidential-client flow down.
+        var resolver = new DiscoveryResolver(builderFor(uriBuilder.buildAsString()).build());
+
+        var metadata = resolver.resolve();
+
+        assertTrue(metadata.getTokenEndpoint().isPresent(),
+                "a discovery document above the JWT payload ceiling must resolve at the default setting");
+    }
+
+    @Test
+    @DisplayName("Should reject a document beyond the configured ceiling as a TransportException (M7)")
+    void shouldRejectDocumentBeyondConfiguredCeiling(URIBuilder uriBuilder) {
+        var configuration = builderFor(uriBuilder.buildAsString())
+                .discoveryDocumentMaxSize(4 * 1024)
+                .build();
+        var resolver = new DiscoveryResolver(configuration);
 
         assertThrows(TransportException.class, resolver::resolve,
-                "a discovery document exceeding the payload ceiling must be refused, not buffered whole");
+                "a discovery document exceeding the configured ceiling must be refused, not buffered whole");
     }
 
     /**
-     * Serves a syntactically-valid well-known document padded well beyond the 8&nbsp;KiB payload
-     * ceiling, so the bounded body handler must trip during the read.
+     * Serves a syntactically-valid well-known document padded by a configurable number of bytes, so a
+     * test can place it either side of a given ceiling.
      */
-    static final class OversizedWellKnownDispatcher implements ModuleDispatcherElement {
+    record PaddedWellKnownDispatcher(int paddingBytes) implements ModuleDispatcherElement {
 
         @Override
         public String getBaseUrl() {
@@ -192,14 +214,26 @@ class DiscoveryResolverSizeCapTest {
         public Optional<MockResponse> handleGet(RecordedRequest request) {
             String issuer = request.getUrl().toString();
             issuer = issuer.substring(0, issuer.indexOf(WellKnownDispatcher.LOCAL_PATH));
-            String padding = "x".repeat(9 * 1024);
             String body = "{\n"
                     + "  \"issuer\": \"" + issuer + "\",\n"
                     + "  \"token_endpoint\": \"" + issuer + "/token\",\n"
                     + "  \"jwks_uri\": \"" + issuer + "/jwks\",\n"
-                    + "  \"padding\": \"" + padding + "\"\n"
+                    + "  \"token_endpoint_auth_methods_supported\": [" + paddingEntries() + "]\n"
                     + "}";
             return Optional.of(new MockResponse(200, Headers.of("Content-Type", "application/json"), body));
+        }
+
+        /**
+         * Pads through a real, list-valued metadata member (as an over-sized document does in the
+         * field) and with many short entries rather than one long string: the shared
+         * {@code ParserConfig} DSL-JSON instance caps an individual string buffer, so a single
+         * multi-KiB string would trip that unrelated limit instead of the size ceiling under test.
+         */
+        private String paddingEntries() {
+            int entryLength = 64;
+            String entry = "\"" + "x".repeat(entryLength) + "\"";
+            int count = paddingBytes / (entryLength + 3);
+            return String.join(",", Collections.nCopies(count, entry));
         }
     }
 }

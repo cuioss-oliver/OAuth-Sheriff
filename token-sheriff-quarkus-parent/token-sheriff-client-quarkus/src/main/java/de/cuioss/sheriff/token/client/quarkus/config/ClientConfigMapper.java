@@ -63,7 +63,9 @@ public final class ClientConfigMapper {
      * @throws IllegalStateException    when a required key ({@link ClientRuntimeConfig#ISSUER} or
      *                                  {@link ClientRuntimeConfig#CLIENT_ID}) is missing
      * @throws IllegalArgumentException when {@link ClientRuntimeConfig#AUTH_METHOD} names an
-     *                                  unrecognised authentication method
+     *                                  unrecognised authentication method, or when
+     *                                  {@link ClientRuntimeConfig#DISCOVERY_DOCUMENT_MAX_SIZE} is not
+     *                                  positive
      */
     public static ClientConfiguration map(Config config) {
         String issuer = requiredValue(config, ClientRuntimeConfig.ISSUER);
@@ -76,6 +78,8 @@ public final class ClientConfigMapper {
                 .allowInsecureHttp(config.getOptionalValue(ClientRuntimeConfig.ALLOW_INSECURE_HTTP, Boolean.class)
                         .orElse(Boolean.FALSE));
 
+        config.getOptionalValue(ClientRuntimeConfig.DISCOVERY_DOCUMENT_MAX_SIZE, Integer.class)
+                .ifPresent(builder::discoveryDocumentMaxSize);
         config.getOptionalValue(ClientRuntimeConfig.CLIENT_SECRET, String.class).ifPresent(builder::clientSecret);
         config.getOptionalValue(ClientRuntimeConfig.REDIRECT_URI, String.class).ifPresent(builder::redirectUri);
         resolveScopes(config).forEach(builder::scope);

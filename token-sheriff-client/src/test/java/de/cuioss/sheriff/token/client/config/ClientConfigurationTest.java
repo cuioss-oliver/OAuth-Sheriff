@@ -158,6 +158,45 @@ class ClientConfigurationTest {
     }
 
     @Test
+    @DisplayName("Should default the discovery-document ceiling above the JWT payload ceiling and keep it settable")
+    void shouldExposeDiscoveryDocumentMaxSize() {
+        var defaulted = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).build();
+        var explicit = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .discoveryDocumentMaxSize(256 * 1024).build();
+
+        assertAll("discovery-document ceiling",
+                () -> assertEquals(ClientConfiguration.DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE,
+                        defaulted.getDiscoveryDocumentMaxSize()),
+                // The defect: the ceiling used to be the 8 KiB JWT payload bound, which an ordinary
+                // Keycloak realm already exceeds. The default must leave real documents room.
+                () -> assertTrue(defaulted.getDiscoveryDocumentMaxSize() > 8 * 1024,
+                        "the default must exceed the JWT payload ceiling it used to borrow"),
+                () -> assertEquals(256 * 1024, explicit.getDiscoveryDocumentMaxSize(),
+                        "an embedder facing a larger document can raise the ceiling"));
+    }
+
+    @Test
+    @DisplayName("Should reject a non-positive discovery-document ceiling at construction")
+    void shouldRejectNonPositiveDiscoveryDocumentMaxSize() {
+        var zero = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).discoveryDocumentMaxSize(0);
+        var negative = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).discoveryDocumentMaxSize(-1);
+
+        assertAll("discovery-document ceiling guards",
+                () -> assertThrows(IllegalArgumentException.class, zero::build,
+                        "a zero ceiling would reject every discovery document"),
+                () -> assertThrows(IllegalArgumentException.class, negative::build,
+                        "a negative ceiling is not a size"));
+    }
+
+    @Test
     @DisplayName("Should reject a null issuer, client id or auth method")
     void shouldRejectNullRequiredFields() {
         var clientId = Generators.nonBlankStrings().next();
