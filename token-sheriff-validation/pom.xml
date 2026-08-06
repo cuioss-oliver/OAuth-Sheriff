@@ -4,7 +4,7 @@
     <parent>
         <groupId>de.cuioss.sheriff.token</groupId>
         <artifactId>token-sheriff-parent</artifactId>
-        <version>0.9.4-SNAPSHOT</version>
+        <version>0.9.4</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
