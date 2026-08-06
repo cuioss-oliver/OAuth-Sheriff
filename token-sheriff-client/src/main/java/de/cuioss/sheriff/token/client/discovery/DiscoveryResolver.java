@@ -48,6 +48,10 @@ import java.util.Objects;
  * therefore parses the document directly into the richer {@link ProviderMetadata} record, reusing
  * the commons {@link ParserConfig} DSL-JSON instance (secure limits, native-image friendly).
  * <p>
+ * The response is bounded during the read by
+ * {@link ClientConfiguration#getDiscoveryDocumentMaxSize()} — the discovery document's own ceiling,
+ * settable per client.
+ * <p>
  * <strong>Security:</strong> a non-TLS issuer is rejected unless
  * {@link ClientConfiguration#allowInsecureHttp} is set; the discovery document's
  * {@code issuer} must match the configured issuer (OpenID Connect Discovery §4.3, a mix-up
@@ -78,9 +82,12 @@ public class DiscoveryResolver {
      */
     public DiscoveryResolver(ClientConfiguration configuration) {
         this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
-        ParserConfig parserConfig = ParserConfig.builder().build();
-        this.dslJson = parserConfig.getDslJson();
-        this.maxContentSize = parserConfig.getMaxPayloadSize();
+        this.dslJson = ParserConfig.builder().build().getDslJson();
+        // The discovery document is bounded by its own configured ceiling, not by the JWT payload
+        // ceiling (ParserConfig.getMaxPayloadSize()): the two are unrelated artifacts with unrelated
+        // size profiles, and an ordinary Keycloak realm already publishes a document larger than the
+        // 8 KiB payload bound, which failed discovery outright with no deployment-side remedy.
+        this.maxContentSize = configuration.getDiscoveryDocumentMaxSize();
         this.backChannel = new BackChannelHttp(configuration, maxContentSize);
     }
 
