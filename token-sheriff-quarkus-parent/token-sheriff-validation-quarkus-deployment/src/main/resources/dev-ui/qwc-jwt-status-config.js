@@ -377,24 +377,26 @@ export class QwcJwtStatusConfig extends LitElement {
             <div class="metric-value">${status.status}</div>
           </div>
 
-          ${status.securityEvents
-            ? html`
-                <div class="metric-card">
-                  <div class="metric-label">Total Security Events</div>
-                  <div class="metric-value">${status.securityEvents.totalEvents}</div>
-                </div>
+          ${
+            status.securityEvents
+              ? html`
+                  <div class="metric-card">
+                    <div class="metric-label">Total Security Events</div>
+                    <div class="metric-value">${status.securityEvents.totalEvents}</div>
+                  </div>
 
-                <div class="metric-card">
-                  <div class="metric-label">Error Events</div>
-                  <div class="metric-value">${status.securityEvents.errorEvents}</div>
-                </div>
+                  <div class="metric-card">
+                    <div class="metric-label">Error Events</div>
+                    <div class="metric-value">${status.securityEvents.errorEvents}</div>
+                  </div>
 
-                <div class="metric-card">
-                  <div class="metric-label">Warning Events</div>
-                  <div class="metric-value">${status.securityEvents.warningEvents}</div>
-                </div>
-              `
-            : ''}
+                  <div class="metric-card">
+                    <div class="metric-label">Warning Events</div>
+                    <div class="metric-value">${status.securityEvents.warningEvents}</div>
+                  </div>
+                `
+              : ''
+          }
         </div>
       </div>
     `;
@@ -407,71 +409,75 @@ export class QwcJwtStatusConfig extends LitElement {
     return html`
       <div class="section" data-testid="status-config-issuers-section">
         <h4 class="section-title">Issuers</h4>
-        ${jwks.issuers && jwks.issuers.length > 0
-          ? html`
-              <div class="issuers-grid">
-                ${jwks.issuers.map((issuer) => {
-                  const configIssuer = configIssuers[issuer.name] || {};
-                  return html`
-                    <div class="issuer-card" data-testid="status-config-issuer-card">
-                      <div class="issuer-name">${issuer.name}</div>
-                      <div class="issuer-details">
-                        <div class="detail-item">
-                          <div class="detail-label">Issuer URI</div>
-                          <div class="detail-value ${issuer.issuerUri === 'not configured' ? 'not-configured' : ''}">
-                            ${issuer.issuerUri}
+        ${
+          jwks.issuers && jwks.issuers.length > 0
+            ? html`
+                <div class="issuers-grid">
+                  ${jwks.issuers.map((issuer) => {
+                    const configIssuer = configIssuers[issuer.name] || {};
+                    return html`
+                      <div class="issuer-card" data-testid="status-config-issuer-card">
+                        <div class="issuer-name">${issuer.name}</div>
+                        <div class="issuer-details">
+                          <div class="detail-item">
+                            <div class="detail-label">Issuer URI</div>
+                            <div class="detail-value ${issuer.issuerUri === 'not configured' ? 'not-configured' : ''}">
+                              ${issuer.issuerUri}
+                            </div>
                           </div>
-                        </div>
 
-                        <div class="detail-item">
-                          <div class="detail-label">JWKS URI</div>
-                          <div class="detail-value ${issuer.jwksUri === 'not configured' ? 'not-configured' : ''}">
-                            ${issuer.jwksUri}
+                          <div class="detail-item">
+                            <div class="detail-label">JWKS URI</div>
+                            <div class="detail-value ${issuer.jwksUri === 'not configured' ? 'not-configured' : ''}">
+                              ${issuer.jwksUri}
+                            </div>
                           </div>
-                        </div>
 
-                        <div class="detail-item">
-                          <div class="detail-label">Loader Status</div>
-                          <div class="loader-status">
-                            <div class="status-indicator status-${issuer.loaderStatus.toLowerCase()}"></div>
-                            <span class="detail-value">${issuer.loaderStatus}</span>
+                          <div class="detail-item">
+                            <div class="detail-label">Loader Status</div>
+                            <div class="loader-status">
+                              <div class="status-indicator status-${issuer.loaderStatus.toLowerCase()}"></div>
+                              <span class="detail-value">${issuer.loaderStatus}</span>
+                            </div>
                           </div>
-                        </div>
 
-                        <div class="detail-item">
-                          <div class="detail-label">Last Refresh</div>
-                          <div class="detail-value">${issuer.lastRefresh}</div>
-                        </div>
-
-                        <div class="detail-item">
-                          <div class="detail-label">Audience</div>
-                          <div class="detail-value ${this._formatValue(configIssuer.audience).className}">
-                            ${this._formatValue(configIssuer.audience).text}
+                          <div class="detail-item">
+                            <div class="detail-label">Last Refresh</div>
+                            <div class="detail-value">${issuer.lastRefresh}</div>
                           </div>
-                        </div>
 
-                        <div class="detail-item">
-                          <div class="detail-label">Public Key Location</div>
-                          <div class="detail-value ${this._formatValue(configIssuer.publicKeyLocation).className}">
-                            ${this._formatValue(configIssuer.publicKeyLocation).text}
+                          <div class="detail-item">
+                            <div class="detail-label">Audience</div>
+                            <div class="detail-value ${this._formatValue(configIssuer.audience).className}">
+                              ${this._formatValue(configIssuer.audience).text}
+                            </div>
                           </div>
-                        </div>
 
-                        <div class="detail-item">
-                          <div class="detail-label">Algorithm Preference</div>
-                          <div class="detail-value">
-                            ${configIssuer.algorithmPreference
-                              ? configIssuer.algorithmPreference.join(', ')
-                              : 'default'}
+                          <div class="detail-item">
+                            <div class="detail-label">Public Key Location</div>
+                            <div class="detail-value ${this._formatValue(configIssuer.publicKeyLocation).className}">
+                              ${this._formatValue(configIssuer.publicKeyLocation).text}
+                            </div>
+                          </div>
+
+                          <div class="detail-item">
+                            <div class="detail-label">Algorithm Preference</div>
+                            <div class="detail-value">
+                              ${
+                                configIssuer.algorithmPreference
+                                  ? configIssuer.algorithmPreference.join(', ')
+                                  : 'default'
+                              }
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  `;
-                })}
-              </div>
-            `
-          : html`<div class="no-issuers">No issuers configured. JWT validation will not be available.</div>`}
+                    `;
+                  })}
+                </div>
+              `
+            : html`<div class="no-issuers">No issuers configured. JWT validation will not be available.</div>`
+        }
       </div>
     `;
   }
@@ -588,17 +594,19 @@ export class QwcJwtStatusConfig extends LitElement {
     return html`
       <div class="container" data-testid="status-config-container">
         <div class="toolbar">
-          ${health
-            ? html`
-                <div
-                  class="health-indicator ${health.overallStatus === 'HEALTHY' ? 'health-healthy' : 'health-issues'}"
-                  data-testid="status-config-health-indicator"
-                >
-                  <div class="health-dot ${health.overallStatus === 'HEALTHY' ? 'healthy' : 'issues'}"></div>
-                  ${health.overallStatus === 'HEALTHY' ? 'Healthy' : 'Issues Detected'}
-                </div>
-              `
-            : ''}
+          ${
+            health
+              ? html`
+                  <div
+                    class="health-indicator ${health.overallStatus === 'HEALTHY' ? 'health-healthy' : 'health-issues'}"
+                    data-testid="status-config-health-indicator"
+                  >
+                    <div class="health-dot ${health.overallStatus === 'HEALTHY' ? 'healthy' : 'issues'}"></div>
+                    ${health.overallStatus === 'HEALTHY' ? 'Healthy' : 'Issues Detected'}
+                  </div>
+                `
+              : ''
+          }
           <button class="refresh-button" data-testid="status-config-refresh-button" @click="${this._refresh}">
             Refresh
           </button>
@@ -607,16 +615,18 @@ export class QwcJwtStatusConfig extends LitElement {
         <div class="sections">
           ${this._renderStatusOverview()} ${this._renderIssuers()} ${this._renderParserConfiguration()}
           ${this._renderHttpConfiguration()} ${this._renderGeneralSettings()}
-          ${health && health.issues && health.issues.length > 0
-            ? html`
-                <div class="section">
-                  <h4 class="section-title">Configuration Issues</h4>
-                  <div style="color: var(--lumo-error-text-color);">
-                    ${health.issues.map((issue) => html`<div style="margin-bottom: 0.5rem;">&bull; ${issue}</div>`)}
+          ${
+            health && health.issues && health.issues.length > 0
+              ? html`
+                  <div class="section">
+                    <h4 class="section-title">Configuration Issues</h4>
+                    <div style="color: var(--lumo-error-text-color);">
+                      ${health.issues.map((issue) => html`<div style="margin-bottom: 0.5rem;">&bull; ${issue}</div>`)}
+                    </div>
                   </div>
-                </div>
-              `
-            : ''}
+                `
+              : ''
+          }
         </div>
       </div>
     `;
