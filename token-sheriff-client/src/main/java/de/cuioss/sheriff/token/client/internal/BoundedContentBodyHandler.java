@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.token.client.internal;
 
+import org.jspecify.annotations.Nullable;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.http.HttpResponse;
@@ -89,7 +91,7 @@ public final class BoundedContentBodyHandler implements HttpResponse.BodyHandler
         private final String boundOrigin;
         private final CompletableFuture<String> result = new CompletableFuture<>();
         private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        private Flow.Subscription subscription;
+        private Flow.@Nullable Subscription subscription;
         private long total;
 
         BoundedStringSubscriber(int maxBytes, Charset charset, String boundOrigin) {
@@ -115,7 +117,9 @@ public final class BoundedContentBodyHandler implements HttpResponse.BodyHandler
                 int remaining = item.remaining();
                 total += remaining;
                 if (total > maxBytes) {
-                    subscription.cancel();
+                    if (subscription != null) {
+                        subscription.cancel();
+                    }
                     buffer.reset();
                     result.completeExceptionally(new IOException(
                             "response body exceeds the maximum allowed size of " + maxBytes + " bytes ("
