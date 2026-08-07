@@ -179,7 +179,7 @@ public class DiscoveryResolver {
         if (bytes.length > maxContentSize) {
             throw new TransportException(ClientLogMessages.ERROR.DISCOVERY_FAILED.format(
                     issuer, "discovery response exceeds maximum allowed size of " + maxContentSize
-                            + " bytes (" + BOUND_ORIGIN + ")"));
+                    + " bytes (" + BOUND_ORIGIN + ")"));
         }
         try {
             ProviderMetadata metadata = dslJson.deserialize(ProviderMetadata.class, bytes, bytes.length);

@@ -133,7 +133,7 @@ class BackChannelHttpTlsTrustTest {
                 () -> assertSame(configured, tlsHandler.getSslContext(),
                         "the TLS handler must still carry the configured trust material"),
                 () -> assertSame(tlsClient, backChannel.sharedClient(
-                        backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT)),
+                                backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT)),
                         "two TLS endpoints on one configuration must still share a pooled client"));
     }
 
