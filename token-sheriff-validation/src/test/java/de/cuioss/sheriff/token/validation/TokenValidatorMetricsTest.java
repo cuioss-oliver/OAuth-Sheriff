@@ -45,6 +45,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * This test focuses on reproducing missing metric entries and timing discrepancies
  * observed in the benchmark results.
  */
+// cui-rewrite:disable CuiLoggerStandardsRecipe
+// The timing-report log calls below use the argument-less %n conversion, which
+// CuiLoggerStandardsRecipe misreads as a value placeholder and rewrites to %s,
+// corrupting the format strings — see https://github.com/cuioss/cui-open-rewrite/issues/135
 @EnableGeneratorController
 @EnableTestLogger
 class TokenValidatorMetricsTest {
