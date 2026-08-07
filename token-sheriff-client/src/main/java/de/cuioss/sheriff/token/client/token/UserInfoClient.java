@@ -95,7 +95,8 @@ public class UserInfoClient {
         ParserConfig parserConfig = ParserConfig.builder().build();
         this.dslJson = parserConfig.getDslJson();
         this.maxContentSize = parserConfig.getMaxPayloadSize();
-        this.backChannel = new BackChannelHttp(configuration, maxContentSize);
+        this.backChannel = new BackChannelHttp(configuration, maxContentSize,
+                BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
     }
 
     /**
@@ -244,7 +245,8 @@ public class UserInfoClient {
         }
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > maxContentSize) {
-            throw new TransportException("userinfo endpoint response exceeds maximum allowed size");
+            throw new TransportException("userinfo endpoint response exceeds maximum allowed size of "
+                    + maxContentSize + " bytes (" + BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN + ")");
         }
         try {
             UserInfoResponse userInfo = dslJson.deserialize(UserInfoResponse.class, bytes, bytes.length);

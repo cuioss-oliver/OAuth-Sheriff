@@ -35,13 +35,16 @@ import mockwebserver3.MockResponse;
 import mockwebserver3.RecordedRequest;
 import okhttp3.Headers;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ArgumentsSource;
 
 import java.util.Optional;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Hardening sweep — drives the full {@code http.security} attack corpora through the userinfo
@@ -81,6 +84,29 @@ class RetrievalParsingAttackDatabaseTest {
     @DisplayName("Should reject a ModSecurity CRS attack payload served as a userinfo response body")
     void rejectsModSecurityAttackBodies(AttackTestCase testCase, URIBuilder uriBuilder) {
         assertRetrievalFailsClosed(testCase.attackString(), uriBuilder);
+    }
+
+    @Test
+    @DisplayName("Should declare the back-channel bound fixed when rejecting an over-limit userinfo body")
+    void shouldDeclareBackChannelBoundFixed(URIBuilder uriBuilder) {
+        // The back-channel clients build their own ParserConfig, so their payload ceiling is NOT
+        // reachable from ClientConfiguration nor from sheriff.token.parser.max-payload-size. The
+        // failure must say so rather than send a reader chasing a property that has no effect here.
+        moduleDispatcher.serve("{\"sub\": \"" + "x".repeat(9 * 1024) + "\"}");
+        var client = new UserInfoClient(config());
+        String userInfoEndpoint = uriBuilder.addPathSegment("userinfo").buildAsString();
+        String accessToken = Generators.letterStrings(20, 40).next();
+
+        var failure = assertThrows(TransportException.class,
+                () -> client.fetchUserInfo(userInfoEndpoint, accessToken),
+                "an over-limit userinfo response body must fail closed");
+
+        assertAll("bound origin is named and declared fixed",
+                () -> assertTrue(failure.getMessage().contains("ParserConfig.maxPayloadSize"),
+                        "failure must name the originating knob, but was: " + failure.getMessage()),
+                () -> assertTrue(
+                        failure.getMessage().contains("fixed on this path, not settable via ClientConfiguration"),
+                        "failure must declare the bound fixed on this path, but was: " + failure.getMessage()));
     }
 
     private void assertRetrievalFailsClosed(String attackBody, URIBuilder uriBuilder) {

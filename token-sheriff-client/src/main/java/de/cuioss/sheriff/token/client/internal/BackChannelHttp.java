@@ -66,7 +66,9 @@ import java.util.concurrent.ConcurrentMap;
  *   <li><strong>Configurable timeouts (L15):</strong> connect / read timeouts are read from
  *       {@link ClientConfiguration}, not hardcoded per client.</li>
  *   <li><strong>Bounded body reads (M7):</strong> {@link #bodyHandler()} enforces the payload ceiling
- *       during the read via {@link BoundedContentBodyHandler}.</li>
+ *       during the read via {@link BoundedContentBodyHandler}. The ceiling's provenance travels with
+ *       the failure: each construction site supplies a {@code boundOrigin} descriptor naming the knob
+ *       that set the bound and whether it is settable, and the over-limit message reports it.</li>
  * </ul>
  *
  * @since 1.0
@@ -76,19 +78,36 @@ public final class BackChannelHttp {
 
     private static final CuiLogger LOGGER = new CuiLogger(BackChannelHttp.class);
 
+    /**
+     * Bound origin for the back-channel clients (token, PAR, userinfo, revocation) that build their
+     * own {@code ParserConfig} internally: their payload ceiling is deliberately fixed on that path
+     * and is <em>not</em> reachable from {@link ClientConfiguration} nor from the
+     * {@code sheriff.token.parser.max-payload-size} property, which feeds a different object graph.
+     * The message must say so rather than let a reader chase a setting that has no effect here.
+     * <p>
+     * This is a shared descriptor, not a default: {@link #BackChannelHttp(ClientConfiguration, int, String)}
+     * still requires the argument, so a new endpoint client cannot silently omit its origin.
+     */
+    public static final String FIXED_PARSER_CONFIG_ORIGIN =
+            "ParserConfig.maxPayloadSize; fixed on this path, not settable via ClientConfiguration";
+
     private final ClientConfiguration configuration;
     private final HttpSecurityValidator egressValidator;
     private final int maxContentSize;
+    private final String boundOrigin;
     private final ConcurrentMap<String, HttpClient> sharedClients = new ConcurrentHashMap<>();
 
     /**
      * @param configuration  the client configuration carrying the TLS policy and timeout knobs; must
      *                       not be {@code null}
      * @param maxContentSize the maximum response body size, in bytes, enforced during read
+     * @param boundOrigin    the human-readable provenance of {@code maxContentSize} — the knob that set
+     *                       it, and whether it is settable; reported in the over-limit failure message
      */
-    public BackChannelHttp(ClientConfiguration configuration, int maxContentSize) {
+    public BackChannelHttp(ClientConfiguration configuration, int maxContentSize, String boundOrigin) {
         this.configuration = Objects.requireNonNull(configuration, "configuration must not be null");
         this.maxContentSize = maxContentSize;
+        this.boundOrigin = Objects.requireNonNull(boundOrigin, "boundOrigin must not be null");
         this.egressValidator = PipelineFactory.createUrlPathPipeline(
                 SecurityConfiguration.defaults(), new SecurityEventCounter());
     }
@@ -176,6 +195,6 @@ public final class BackChannelHttp {
      * @return a bounded body handler that enforces the configured payload ceiling during the read (M7)
      */
     public HttpResponse.BodyHandler<String> bodyHandler() {
-        return BoundedContentBodyHandler.of(maxContentSize);
+        return BoundedContentBodyHandler.of(maxContentSize, boundOrigin);
     }
 }

@@ -115,7 +115,7 @@ class BackChannelHttpTlsTrustTest {
         var backChannel = new BackChannelHttp(configurationBuilder()
                 .sslContext(configured)
                 .allowInsecureHttp(true)
-                .build(), MAX_CONTENT_SIZE);
+                .build(), MAX_CONTENT_SIZE, BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
 
         // The cleartext endpoint is reached FIRST, so it is the one that would seed a single shared
         // client. cui-http's HTTP path installs no SSLContext and no TLS-version pinning, so a client
@@ -138,11 +138,13 @@ class BackChannelHttpTlsTrustTest {
     }
 
     private static BackChannelHttp backChannelWith(SSLContext sslContext) {
-        return new BackChannelHttp(configurationBuilder().sslContext(sslContext).build(), MAX_CONTENT_SIZE);
+        return new BackChannelHttp(configurationBuilder().sslContext(sslContext).build(), MAX_CONTENT_SIZE,
+                BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
     }
 
     private static BackChannelHttp backChannelWithoutTrust() {
-        return new BackChannelHttp(configurationBuilder().build(), MAX_CONTENT_SIZE);
+        return new BackChannelHttp(configurationBuilder().build(), MAX_CONTENT_SIZE,
+                BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
     }
 
     private static ClientConfiguration.ClientConfigurationBuilder configurationBuilder() {

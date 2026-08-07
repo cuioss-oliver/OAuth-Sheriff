@@ -190,8 +190,16 @@ class DiscoveryResolverSizeCapTest {
                 .build();
         var resolver = new DiscoveryResolver(configuration);
 
-        assertThrows(TransportException.class, resolver::resolve,
+        var failure = assertThrows(TransportException.class, resolver::resolve,
                 "a discovery document exceeding the configured ceiling must be refused, not buffered whole");
+
+        // The reader must be able to tell WHICH knob produced the ceiling and that it is tunable,
+        // rather than chasing sheriff.token.parser.max-payload-size, which feeds a different graph.
+        assertAll("bound origin is named and declared settable",
+                () -> assertTrue(failure.getMessage().contains("ClientConfiguration.discoveryDocumentMaxSize"),
+                        "failure must name the originating knob, but was: " + failure.getMessage()),
+                () -> assertTrue(failure.getMessage().contains("settable via ClientConfiguration.builder()"),
+                        "failure must report the knob as settable, but was: " + failure.getMessage()));
     }
 
     /**

@@ -69,6 +69,13 @@ public class DiscoveryResolver {
     private static final String WELL_KNOWN_SUFFIX = "/.well-known/openid-configuration";
     private static final String SCHEME_HTTPS = "https";
 
+    /**
+     * Human-readable provenance of the discovery-document byte ceiling, reported with every
+     * over-limit rejection so a reader knows which knob produced the bound and that it is settable.
+     */
+    private static final String BOUND_ORIGIN =
+            "ClientConfiguration.discoveryDocumentMaxSize; settable via ClientConfiguration.builder()";
+
     private final ClientConfiguration configuration;
     private final DslJson<Object> dslJson;
     private final int maxContentSize;
@@ -88,7 +95,7 @@ public class DiscoveryResolver {
         // size profiles, and an ordinary Keycloak realm already publishes a document larger than the
         // 8 KiB payload bound, which failed discovery outright with no deployment-side remedy.
         this.maxContentSize = configuration.getDiscoveryDocumentMaxSize();
-        this.backChannel = new BackChannelHttp(configuration, maxContentSize);
+        this.backChannel = new BackChannelHttp(configuration, maxContentSize, BOUND_ORIGIN);
     }
 
     /**
@@ -171,7 +178,8 @@ public class DiscoveryResolver {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > maxContentSize) {
             throw new TransportException(ClientLogMessages.ERROR.DISCOVERY_FAILED.format(
-                    issuer, "discovery response exceeds maximum allowed size"));
+                    issuer, "discovery response exceeds maximum allowed size of " + maxContentSize
+                            + " bytes (" + BOUND_ORIGIN + ")"));
         }
         try {
             ProviderMetadata metadata = dslJson.deserialize(ProviderMetadata.class, bytes, bytes.length);

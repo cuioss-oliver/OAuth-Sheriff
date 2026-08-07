@@ -65,7 +65,8 @@ public class RevocationClient {
      */
     public RevocationClient(ClientConfiguration configuration) {
         Objects.requireNonNull(configuration, "configuration must not be null");
-        this.backChannel = new BackChannelHttp(configuration, ParserConfig.builder().build().getMaxPayloadSize());
+        this.backChannel = new BackChannelHttp(configuration, ParserConfig.builder().build().getMaxPayloadSize(),
+                BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
     }
 
     /**
