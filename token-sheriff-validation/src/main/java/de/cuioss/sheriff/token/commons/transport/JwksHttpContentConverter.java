@@ -39,7 +39,10 @@ import java.util.Optional;
  * <p>
  * A byte ceiling ({@link ParserConfig#getMaxPayloadSize()}) is enforced on the JWKS body while it
  * streams (see {@link BoundedBodyHandlers}), so an oversized key set is rejected before it is fully
- * buffered rather than being read unbounded into memory (H2).
+ * buffered rather than being read unbounded into memory (H2). Both the streaming rejection and the
+ * post-materialization rejection report the enforced bound together with its origin — the
+ * {@code ParserConfig.maxPayloadSize} knob and how to set it — so a reader of the failure knows
+ * which setting produced the ceiling.
  *
  * @since 1.0
  * @author Oliver Wolff
@@ -47,6 +50,13 @@ import java.util.Optional;
 public class JwksHttpContentConverter extends StringContentConverter<Jwks> {
 
     private static final CuiLogger LOGGER = new CuiLogger(JwksHttpContentConverter.class);
+
+    /**
+     * Human-readable provenance of the JWKS byte ceiling, reported with every over-limit rejection
+     * so a reader knows which knob produced the bound and that it is settable.
+     */
+    private static final String BOUND_ORIGIN =
+            "ParserConfig.maxPayloadSize; settable via ParserConfig.builder().maxPayloadSize(...)";
 
     private final DslJson<Object> dslJson;
     private final int maxContentSize;
@@ -66,7 +76,7 @@ public class JwksHttpContentConverter extends StringContentConverter<Jwks> {
     public HttpResponse.BodyHandler<?> getBodyHandler() {
         // Bound the JWKS body during streaming so an oversized response fails closed before it is
         // fully materialized. The size check in convertString(...) remains as defense in depth.
-        return BoundedBodyHandlers.ofBoundedString(StandardCharsets.UTF_8, maxContentSize);
+        return BoundedBodyHandlers.ofBoundedString(StandardCharsets.UTF_8, maxContentSize, BOUND_ORIGIN);
     }
 
     @Override
@@ -78,7 +88,8 @@ public class JwksHttpContentConverter extends StringContentConverter<Jwks> {
 
         byte[] bodyBytes = rawContent.getBytes(StandardCharsets.UTF_8);
         if (bodyBytes.length > maxContentSize) {
-            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED, "JWKS response size exceeds maximum allowed size");
+            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED,
+                    "JWKS response size exceeds maximum allowed size of " + maxContentSize + " bytes (" + BOUND_ORIGIN + ")");
             return Optional.empty();
         }
 

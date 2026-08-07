@@ -26,6 +26,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -54,6 +55,9 @@ class WellKnownResultConverterTest {
                 "jwks_uri": "https://example.com/.well-known/jwks.json"
             }
             """;
+
+    /** The knob a well-known bounded-read failure must name as the origin of its ceiling. */
+    private static final String BOUND_ORIGIN_KNOB = "WellKnownConfig.parserConfig.maxPayloadSize";
 
     private WellKnownConfigurationConverter converter;
 
@@ -182,14 +186,39 @@ class WellKnownResultConverterTest {
                 }
                 """;
 
-        assertThrows(TransportException.class, () ->
+        TransportException thrown = assertThrows(TransportException.class, () ->
                 restrictiveConverter.convert(largeJson));
 
+        assertTrue(thrown.getMessage().contains(BOUND_ORIGIN_KNOB),
+                "Rejection must name the knob that set the ceiling, but was: " + thrown.getMessage());
+        assertTrue(thrown.getMessage().contains(String.valueOf(maxContentSize)),
+                "Rejection must report the enforced ceiling, but was: " + thrown.getMessage());
         assertTrue(securityEventCounter.getCount(SecurityEventCounter.EventType.JWKS_JSON_PARSE_FAILED) > 0);
 
-        // Verify the log message was written
+        // Verify the log message was written, and that it carries the same origin as the exception
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
                 TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED.resolveIdentifierString());
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, BOUND_ORIGIN_KNOB);
+    }
+
+    @Test
+    @DisplayName("Should name the bound origin when rejecting an over-limit body during streaming")
+    void shouldNameBoundOriginWhenRejectingOverLimitBodyDuringStreaming() {
+        ParserConfig config = ParserConfig.builder().build();
+        int maxContentSize = 64;
+        WellKnownConfigurationConverter restrictiveConverter =
+                new WellKnownConfigurationConverter(config.getDslJson(), new SecurityEventCounter(), maxContentSize);
+        byte[] overLimit = "x".repeat(maxContentSize + 40).getBytes(StandardCharsets.UTF_8);
+
+        var result = BoundedBodyHandlerTestSupport.drive(restrictiveConverter.getBodyHandler(), overLimit, null);
+
+        assertFalse(result.succeeded(), "Over-limit well-known body must fail closed during streaming");
+        assertNotNull(result.failure());
+        assertTrue(result.failure().getMessage().contains(BOUND_ORIGIN_KNOB),
+                "Streaming rejection must name the same knob as the post-materialization rejection, but was: "
+                        + result.failure().getMessage());
+        assertTrue(result.failure().getMessage().contains(String.valueOf(maxContentSize)),
+                "Streaming rejection must report the enforced ceiling, but was: " + result.failure().getMessage());
     }
 
     @Test

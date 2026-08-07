@@ -44,6 +44,13 @@ class WellKnownConfigurationConverter implements HttpResponseConverter<WellKnown
 
     private static final CuiLogger LOGGER = new CuiLogger(WellKnownConfigurationConverter.class);
 
+    /**
+     * Human-readable provenance of the well-known byte ceiling, reported with every over-limit
+     * rejection so a reader knows which knob produced the bound and that it is settable.
+     */
+    private static final String BOUND_ORIGIN =
+            "WellKnownConfig.parserConfig.maxPayloadSize; settable via WellKnownConfig.builder().parserConfig(...)";
+
     private final DslJson<Object> dslJson;
     private final SecurityEventCounter securityEventCounter;
     private final int maxContentSize;
@@ -79,10 +86,12 @@ class WellKnownConfigurationConverter implements HttpResponseConverter<WellKnown
         // Check content size limit
         byte[] contentBytes = stringContent.getBytes(StandardCharsets.UTF_8);
         if (contentBytes.length > maxContentSize) {
-            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED, "Well-known response size exceeds maximum allowed size");
+            String overLimitMessage = "Well-known response size exceeds maximum allowed size of "
+                    + maxContentSize + " bytes (" + BOUND_ORIGIN + ")";
+            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED, overLimitMessage);
             securityEventCounter.increment(EventType.JWKS_JSON_PARSE_FAILED);
             throw new TransportException(
-                    TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED.format("Well-known response size exceeds maximum allowed size")
+                    TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED.format(overLimitMessage)
             );
         }
 
@@ -133,7 +142,7 @@ class WellKnownConfigurationConverter implements HttpResponseConverter<WellKnown
         // Enforce the byte ceiling while the body streams — an over-limit discovery document is
         // rejected before it is fully buffered, closing the unbounded-buffering DoS vector (H2).
         // The post-materialization check in convert(...) remains as defense in depth.
-        return BoundedBodyHandlers.ofBoundedString(StandardCharsets.UTF_8, maxContentSize);
+        return BoundedBodyHandlers.ofBoundedString(StandardCharsets.UTF_8, maxContentSize, BOUND_ORIGIN);
     }
 
     @Override

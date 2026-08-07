@@ -155,6 +155,9 @@ class JwksHttpContentConverterTest {
 
     private static final int BOUNDED_MAX = 64;
 
+    /** The knob a JWKS bounded-read failure must name as the origin of its ceiling. */
+    private static final String BOUND_ORIGIN_KNOB = "ParserConfig.maxPayloadSize";
+
     private JwksHttpContentConverter boundedConverter() {
         return new JwksHttpContentConverter(ParserConfig.builder().maxPayloadSize(BOUNDED_MAX).build());
     }
@@ -170,6 +173,8 @@ class JwksHttpContentConverterTest {
         assertNotNull(result.failure());
         assertTrue(result.failure().getMessage().contains("exceeds maximum allowed size"),
                 "Failure must name the size-ceiling breach, but was: " + result.failure().getMessage());
+        assertTrue(result.failure().getMessage().contains(BOUND_ORIGIN_KNOB),
+                "Failure must name the knob that set the ceiling, but was: " + result.failure().getMessage());
         assertTrue(result.cancelled(),
                 "Subscription must be cancelled mid-stream — the over-limit body is not fully buffered");
     }
@@ -185,6 +190,8 @@ class JwksHttpContentConverterTest {
         assertNotNull(result.failure());
         assertTrue(result.failure().getMessage().contains("exceeds maximum allowed size"),
                 "Failure must name the size-ceiling breach, but was: " + result.failure().getMessage());
+        assertTrue(result.failure().getMessage().contains(BOUND_ORIGIN_KNOB),
+                "Failure must name the knob that set the ceiling, but was: " + result.failure().getMessage());
         assertTrue(result.cancelled(),
                 "Content-Length pre-check must cancel the subscription — the over-limit body is never read, not drained");
     }
@@ -211,5 +218,6 @@ class JwksHttpContentConverterTest {
         assertTrue(result.isEmpty(), "convertString() must reject an over-limit body as defense in depth");
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
                 WARN.JWKS_JSON_PARSE_FAILED.resolveIdentifierString());
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, BOUND_ORIGIN_KNOB);
     }
 }

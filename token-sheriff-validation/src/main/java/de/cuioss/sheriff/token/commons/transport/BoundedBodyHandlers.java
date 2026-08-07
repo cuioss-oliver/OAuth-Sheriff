@@ -32,7 +32,7 @@ import java.util.concurrent.Flow;
  * <p>
  * The IdP-advertised discovery and JWKS endpoints are attacker-influenceable: a hostile or
  * slow-drip multi-gigabyte body would exhaust the heap if the whole body were buffered before any
- * size check. {@link #ofBoundedString(Charset, long)} closes that vector with two layers, both
+ * size check. {@link #ofBoundedString(Charset, long, String)} closes that vector with two layers, both
  * fail-closed:
  * <ol>
  *   <li><strong>Content-Length pre-check</strong> — a response that advertises a
@@ -43,6 +43,10 @@ import java.util.concurrent.Flow;
  *       its {@code Content-Length}, or advertised none, is caught here).</li>
  * </ol>
  * An over-limit body therefore fails closed with an {@link IOException}, never an {@code OutOfMemoryError}.
+ * <p>
+ * The rejection message names the ceiling <em>and</em> its origin: callers supply a
+ * {@code boundOrigin} descriptor identifying the knob that set the ceiling and whether it is
+ * settable, so a reader of the failure can tell a tunable bound from a fixed one.
  *
  * @since 1.0
  */
@@ -55,17 +59,19 @@ final class BoundedBodyHandlers {
      * Returns a body handler that decodes the response body to a {@link String} using {@code charset},
      * rejecting any body that exceeds {@code maxBytes} during streaming.
      *
-     * @param charset  the charset used to decode the accumulated bytes
-     * @param maxBytes the inclusive byte ceiling; a body strictly larger than this is rejected
+     * @param charset     the charset used to decode the accumulated bytes
+     * @param maxBytes    the inclusive byte ceiling; a body strictly larger than this is rejected
+     * @param boundOrigin the human-readable provenance of the ceiling — the knob that set it, and
+     *                    whether it is settable; reported verbatim in the rejection message
      * @return a bounded {@code BodyHandler<String>}
      */
-    static HttpResponse.BodyHandler<String> ofBoundedString(Charset charset, long maxBytes) {
+    static HttpResponse.BodyHandler<String> ofBoundedString(Charset charset, long maxBytes, String boundOrigin) {
         return responseInfo -> {
             OptionalLong advertised = responseInfo.headers().firstValueAsLong("Content-Length");
             if (advertised.isPresent() && advertised.getAsLong() > maxBytes) {
-                return rejectingSubscriber(maxBytes);
+                return rejectingSubscriber(maxBytes, boundOrigin);
             }
-            return new BoundedStringSubscriber(charset, maxBytes);
+            return new BoundedStringSubscriber(charset, maxBytes, boundOrigin);
         };
     }
 
@@ -75,8 +81,8 @@ final class BoundedBodyHandlers {
      * Used for the {@code Content-Length} pre-check rejection path, honouring the class contract
      * that an over-advertised body is "rejected without reading its body".
      */
-    private static HttpResponse.BodySubscriber<String> rejectingSubscriber(long maxBytes) {
-        return new CancellingRejectSubscriber(maxBytes);
+    private static HttpResponse.BodySubscriber<String> rejectingSubscriber(long maxBytes, String boundOrigin) {
+        return new CancellingRejectSubscriber(maxBytes, boundOrigin);
     }
 
     /**
@@ -92,8 +98,8 @@ final class BoundedBodyHandlers {
 
         private final CompletableFuture<String> result = new CompletableFuture<>();
 
-        CancellingRejectSubscriber(long maxBytes) {
-            result.completeExceptionally(new IOException(overLimitMessage(maxBytes)));
+        CancellingRejectSubscriber(long maxBytes, String boundOrigin) {
+            result.completeExceptionally(new IOException(overLimitMessage(maxBytes, boundOrigin)));
         }
 
         @Override
@@ -122,8 +128,8 @@ final class BoundedBodyHandlers {
         }
     }
 
-    private static String overLimitMessage(long maxBytes) {
-        return "Response body exceeds maximum allowed size of " + maxBytes + " bytes";
+    private static String overLimitMessage(long maxBytes, String boundOrigin) {
+        return "Response body exceeds maximum allowed size of " + maxBytes + " bytes (" + boundOrigin + ")";
     }
 
     /**
@@ -135,14 +141,16 @@ final class BoundedBodyHandlers {
 
         private final Charset charset;
         private final long maxBytes;
+        private final String boundOrigin;
         private final CompletableFuture<String> result = new CompletableFuture<>();
         private final List<byte[]> chunks = new ArrayList<>();
         private long total;
         private Flow.Subscription subscription;
 
-        BoundedStringSubscriber(Charset charset, long maxBytes) {
+        BoundedStringSubscriber(Charset charset, long maxBytes, String boundOrigin) {
             this.charset = charset;
             this.maxBytes = maxBytes;
+            this.boundOrigin = boundOrigin;
         }
 
         @Override
@@ -166,7 +174,7 @@ final class BoundedBodyHandlers {
                 total += remaining;
                 if (total > maxBytes) {
                     subscription.cancel();
-                    result.completeExceptionally(new IOException(overLimitMessage(maxBytes)));
+                    result.completeExceptionally(new IOException(overLimitMessage(maxBytes, boundOrigin)));
                     return;
                 }
                 byte[] chunk = new byte[remaining];
