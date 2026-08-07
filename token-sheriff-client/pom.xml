@@ -20,7 +20,7 @@
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.token.client</maven.jar.plugin.automatic.module.name>
         <version.lombok>1.18.46</version.lombok>
         <version.dsl.json>2.0.2</version.dsl.json>
-        <version.archunit>1.4.2</version.archunit>
+        <version.archunit>1.5.0</version.archunit>
         <!-- Explicit Failsafe version: token-sheriff-client inherits no maven-failsafe-plugin
              pluginManagement from cui-java-parent or token-sheriff-parent, so the IT tier
              binding below must pin its own version. Kept aligned with the effective Surefire
