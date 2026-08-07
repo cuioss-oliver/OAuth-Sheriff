@@ -88,8 +88,9 @@ public class JwksHttpContentConverter extends StringContentConverter<Jwks> {
 
         byte[] bodyBytes = rawContent.getBytes(StandardCharsets.UTF_8);
         if (bodyBytes.length > maxContentSize) {
-            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED,
-                    "JWKS response size exceeds maximum allowed size of " + maxContentSize + " bytes (" + BOUND_ORIGIN + ")");
+            String overLimitMessage = "JWKS response size exceeds maximum allowed size of "
+                    + maxContentSize + " bytes (" + BOUND_ORIGIN + ")";
+            LOGGER.warn(TransportLogMessages.WARN.JWKS_JSON_PARSE_FAILED, overLimitMessage);
             return Optional.empty();
         }
 
