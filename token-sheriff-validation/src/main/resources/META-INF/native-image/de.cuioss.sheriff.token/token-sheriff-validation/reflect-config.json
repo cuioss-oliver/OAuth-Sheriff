@@ -1,0 +1,187 @@
+[
+  {
+    "name": "de.cuioss.sheriff.token.validation.TokenValidator",
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.IssuerConfigCache",
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.events.SecurityEventCounter",
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.IssuerConfig",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.transport.ParserConfig",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.NonValidatingJwtParser",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.validator.TokenSignatureValidator",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.validator.TokenHeaderValidator",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.validator.TokenClaimValidator",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.TokenBuilder",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.pipeline.DecodedJwt",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwks.http.HttpJwksLoader",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwks.key.JWKSKeyLoader",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwks.key.KeyInfo",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwks.parser.JwksParser",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.security.SignatureAlgorithmPreferences",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.security.JwkAlgorithmPreferences",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwe.JweDecryptor",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwe.JweDecryptionConfig",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.jwe.JweAlgorithmPreferences",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.IdTokenContent",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.UnvalidatedRefreshToken",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.TokenContent",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.BaseTokenContent",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.token.MinimalTokenContent",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.ClaimValue",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.ClaimName",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.ClaimValueType",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.IdentityMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.JsonCollectionMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.KeycloakDefaultGroupsMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.KeycloakDefaultRolesMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.OffsetDateTimeMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.ScopeMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.domain.claim.mapper.StringSplitterMapper",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.transport._WellKnownResult_DslJsonConverter",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.transport._Jwks_DslJsonConverter",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.commons.transport._JwkKey_DslJsonConverter",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "de.cuioss.sheriff.token.validation.json._JwtHeader_DslJsonConverter",
+    "allDeclaredConstructors": true
+  }
+]
