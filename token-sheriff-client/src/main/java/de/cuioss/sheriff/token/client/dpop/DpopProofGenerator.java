@@ -24,6 +24,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.security.AlgorithmParameters;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.MessageDigest;
@@ -32,6 +33,8 @@ import java.security.Signature;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.EdECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECParameterSpec;
 import java.security.spec.EdECPoint;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
@@ -103,8 +106,16 @@ public class DpopProofGenerator {
     private static final String ALG_PS256 = "PS256";
     private static final String ALG_ES256 = "ES256";
 
-    /** Field size of curve P-256 in bits; the guard that rejects any other EC curve. */
-    private static final int P256_FIELD_SIZE_BITS = 256;
+    /** JCA standard name of curve P-256, the only curve an EC proof key may use. */
+    private static final String CURVE_SECP256R1 = "secp256r1";
+
+    /**
+     * Curve P-256's domain parameters, resolved once from the JCA provider. Every EC proof key is
+     * compared against these in full — a field-size check alone would admit any other 256-bit curve
+     * (secp256k1, brainpoolP256r1), whose key would then be published in a JWK claiming
+     * {@code "crv":"P-256"}: a curve-confusion defect.
+     */
+    private static final ECParameterSpec P256_PARAMS = resolveP256Params();
 
     /** Fixed width of a P-256 affine coordinate per RFC 7518 §6.2.1.2. */
     private static final int P256_COORDINATE_BYTES = 32;
@@ -199,12 +210,7 @@ public class DpopProofGenerator {
         }
         if (publicKey instanceof ECPublicKey ecKey) {
             requireKeyTypeMatches(algorithm, KTY_EC);
-            int fieldSize = ecKey.getParams().getCurve().getField().getFieldSize();
-            if (fieldSize != P256_FIELD_SIZE_BITS) {
-                throw new IllegalArgumentException(
-                        "DPoP EC proof key must use curve P-256, but the key's field size is %d bits".formatted(
-                                fieldSize));
-            }
+            requireP256Curve(ecKey.getParams());
             return Map.of(
                     "kty", KTY_EC,
                     "crv", CRV_P256,
@@ -228,6 +234,47 @@ public class DpopProofGenerator {
         throw new IllegalArgumentException(
                 "DPoP proof key must be an RSA, EC P-256 or OKP Ed25519 key pair, but was "
                         + publicKey.getAlgorithm());
+    }
+
+    /**
+     * Resolves curve P-256's domain parameters from the JCA provider.
+     *
+     * @return the {@code secp256r1} domain parameters
+     * @throws IllegalStateException if the provider does not offer curve P-256
+     */
+    private static ECParameterSpec resolveP256Params() {
+        try {
+            AlgorithmParameters parameters = AlgorithmParameters.getInstance(KTY_EC);
+            parameters.init(new ECGenParameterSpec(CURVE_SECP256R1));
+            return parameters.getParameterSpec(ECParameterSpec.class);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("JCA provider does not offer curve P-256 (secp256r1)", e);
+        }
+    }
+
+    /**
+     * Fails fast when an EC proof key is not on curve P-256. The comparison covers the full domain
+     * parameters — curve, generator, order and cofactor — because matching only the field size would
+     * accept a different 256-bit curve and publish it as {@code "crv":"P-256"}.
+     * <p>
+     * {@link ECParameterSpec} does not define {@code equals}, so its components are compared
+     * individually; {@link java.security.spec.EllipticCurve} and {@link java.security.spec.ECPoint}
+     * do define value equality.
+     *
+     * @param params the supplied proof key's domain parameters
+     * @throws IllegalArgumentException if the parameters are not curve P-256's
+     */
+    private static void requireP256Curve(ECParameterSpec params) {
+        boolean onP256 = P256_PARAMS.getCurve().equals(params.getCurve())
+                && P256_PARAMS.getGenerator().equals(params.getGenerator())
+                && P256_PARAMS.getOrder().equals(params.getOrder())
+                && P256_PARAMS.getCofactor() == params.getCofactor();
+        if (!onP256) {
+            throw new IllegalArgumentException(
+                    ("DPoP EC proof key must use curve P-256 (secp256r1), but the key's domain parameters "
+                            + "are those of another curve over a %d-bit field").formatted(
+                            params.getCurve().getField().getFieldSize()));
+        }
     }
 
     /**
@@ -458,7 +505,9 @@ public class DpopProofGenerator {
             case "RS512" -> "SHA512withRSA";
             case ALG_PS256 -> "RSASSA-PSS";
             case ALG_ES256 -> "SHA256withECDSA";
-            case "EdDSA" -> "Ed25519";
+            // The JCA signature algorithm name for EdDSA over curve Ed25519 is the curve name itself,
+            // so the JWK 'crv' constant is the single definition of that string.
+            case "EdDSA" -> CRV_ED25519;
             default -> throw new IllegalArgumentException("unsupported DPoP signing algorithm: " + jwtAlgorithm);
         };
     }

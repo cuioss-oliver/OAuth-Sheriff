@@ -27,6 +27,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.Serial;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -34,8 +35,13 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.security.spec.ECFieldFp;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECParameterSpec;
+import java.security.spec.ECPoint;
+import java.security.spec.EllipticCurve;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
 import java.util.Arrays;
@@ -240,6 +246,16 @@ class DpopProofGeneratorTest {
     }
 
     @Test
+    @DisplayName("Should reject an EC proof key on a different curve that shares the P-256 field size")
+    void shouldRejectSameFieldSizeCurveOtherThanP256() {
+        KeyPair secp256k1KeyPair = new KeyPair(new Secp256k1PublicKey(), ecKeyPair.getPrivate());
+
+        assertThrows(IllegalArgumentException.class, () -> new DpopProofGenerator(secp256k1KeyPair, "ES256"),
+                "secp256k1 shares P-256's 256-bit field size but is a different curve, so publishing it "
+                        + "as crv:P-256 would be curve confusion");
+    }
+
+    @Test
     @DisplayName("Should reject a blank htm or htu")
     void shouldRejectBlankParameters() {
         var proofGenerator = new DpopProofGenerator(keyPair, "RS256");
@@ -338,5 +354,54 @@ class DpopProofGeneratorTest {
 
     private static String decode(String segment) {
         return new String(Base64.getUrlDecoder().decode(segment), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * A public key on curve secp256k1 — a 256-bit curve that is <em>not</em> P-256, and therefore the
+     * case a field-size-only guard wrongly admits. SunEC dropped secp256k1 after JDK 15, so no
+     * {@code KeyPairGenerator} can produce one; the key is assembled from the curve's published
+     * domain parameters (SEC 2 §2.4.1) instead. The guard under test reads nothing but those
+     * parameters, so the missing key material is immaterial to what is asserted.
+     */
+    private static final class Secp256k1PublicKey implements ECPublicKey {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        private static final BigInteger PRIME =
+                new BigInteger("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16);
+        private static final BigInteger ORDER =
+                new BigInteger("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16);
+        private static final ECPoint GENERATOR = new ECPoint(
+                new BigInteger("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", 16),
+                new BigInteger("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", 16));
+        private static final ECParameterSpec PARAMS = new ECParameterSpec(
+                new EllipticCurve(new ECFieldFp(PRIME), BigInteger.ZERO, BigInteger.valueOf(7)),
+                GENERATOR, ORDER, 1);
+
+        @Override
+        public ECPoint getW() {
+            return GENERATOR;
+        }
+
+        @Override
+        public ECParameterSpec getParams() {
+            return PARAMS;
+        }
+
+        @Override
+        public String getAlgorithm() {
+            return "EC";
+        }
+
+        @Override
+        public String getFormat() {
+            return "X.509";
+        }
+
+        @Override
+        public byte[] getEncoded() {
+            return new byte[0];
+        }
     }
 }
