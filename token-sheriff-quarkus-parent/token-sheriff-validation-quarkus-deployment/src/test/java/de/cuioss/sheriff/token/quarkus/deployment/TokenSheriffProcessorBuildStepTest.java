@@ -33,8 +33,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -82,6 +84,38 @@ class TokenSheriffProcessorBuildStepTest {
                         "Core types ship their own metadata and must not creep back into the extension"),
                 () -> assertFalse(registered.contains(AccessTokenContent.class.getName()),
                         "Core types ship their own metadata and must not creep back into the extension"));
+    }
+
+    @Test
+    @DisplayName("Should register each Quarkus-specific type with the expected reflection flags")
+    void shouldRegisterQuarkusSpecificClassesWithExpectedReflectionFlags() {
+        List<ReflectiveClassBuildItem> reflectiveItems = new ArrayList<>();
+        BuildProducer<ReflectiveClassBuildItem> producer = reflectiveItems::add;
+
+        processor.registerQuarkusSpecificClassesForReflection(producer);
+
+        Map<String, ReflectiveClassBuildItem> byClassName = new HashMap<>();
+        for (ReflectiveClassBuildItem item : reflectiveItems) {
+            for (String className : item.getClassNames()) {
+                byClassName.put(className, item);
+            }
+        }
+        assertAll("per-type reflection flags",
+                () -> assertReflectionFlags(byClassName, MeterRegistry.class, true, false, true),
+                () -> assertReflectionFlags(byClassName, JsonWebToken.class, true, true, true),
+                () -> assertReflectionFlags(byClassName, JsonWebTokenAdapter.class, true, true, true),
+                () -> assertReflectionFlags(byClassName, DiscoverableClaimMapper.class, false, false, true));
+    }
+
+    private static void assertReflectionFlags(Map<String, ReflectiveClassBuildItem> byClassName,
+            Class<?> type, boolean methods, boolean fields, boolean constructors) {
+        ReflectiveClassBuildItem item = byClassName.get(type.getName());
+        assertNotNull(item, type.getName() + " should be registered for reflection");
+        assertAll(type.getSimpleName() + " reflection flags",
+                () -> assertEquals(methods, item.isMethods(), "methods flag for " + type.getName()),
+                () -> assertEquals(fields, item.isFields(), "fields flag for " + type.getName()),
+                () -> assertEquals(constructors, item.isConstructors(),
+                        "constructors flag for " + type.getName()));
     }
 
     @Test
