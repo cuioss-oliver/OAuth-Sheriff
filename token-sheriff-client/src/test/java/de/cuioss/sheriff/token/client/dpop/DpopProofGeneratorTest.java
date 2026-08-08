@@ -307,7 +307,7 @@ class DpopProofGeneratorTest {
         }
         byte[] encoded = publicKey.getEncoded();
         if ("EC".equals(publicKey.getAlgorithm())) {
-            // A P-256 SubjectPublicKeyInfo ends with the uncompressed point 0x04 || X(32) || Y(32).
+            // A P-256 SubjectPublicKeyInfo ends with the uncompressed point 0x04 || X(32) || Y(32). // NOSONAR java:S125 - explanatory prose describing byte layout, not commented-out code
             byte[] point = Arrays.copyOfRange(encoded, encoded.length - UNCOMPRESSED_POINT_BYTES, encoded.length);
             assertEquals(0x04, point[0] & 0xFF, "expected an uncompressed P-256 point in the X.509 encoding");
             return Map.of(
