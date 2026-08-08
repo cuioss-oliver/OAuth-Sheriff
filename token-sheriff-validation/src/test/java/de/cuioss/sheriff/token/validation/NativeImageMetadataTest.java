@@ -27,7 +27,9 @@ import java.io.StringReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -106,6 +108,17 @@ class NativeImageMetadataTest {
             }
             assertAll("every registered type is core-owned", assertions);
         }
+
+        @Test
+        @DisplayName("Should list every name at most once")
+        void shouldListEveryNameAtMostOnce() {
+            List<String> names = registeredNames();
+
+            Set<String> distinctNames = new HashSet<>(names);
+
+            assertEquals(distinctNames.size(), names.size(),
+                    "reflect-config.json should not declare the same name twice: " + names);
+        }
     }
 
     @Nested
@@ -117,11 +130,9 @@ class NativeImageMetadataTest {
         void shouldBeShippedAndInitializeHttpJwksLoaderAtRunTime() {
             String properties = readResource(NATIVE_IMAGE_PROPERTIES);
 
-            assertAll("runtime initialization contract",
-                    () -> assertTrue(properties.contains("--initialize-at-run-time"),
-                            "native-image.properties should declare --initialize-at-run-time"),
-                    () -> assertTrue(properties.contains(RUNTIME_INITIALIZED_CLASS),
-                            "native-image.properties should name " + RUNTIME_INITIALIZED_CLASS));
+            assertTrue(properties.contains("--initialize-at-run-time=" + RUNTIME_INITIALIZED_CLASS),
+                    "native-image.properties should declare --initialize-at-run-time="
+                            + RUNTIME_INITIALIZED_CLASS);
         }
     }
 
