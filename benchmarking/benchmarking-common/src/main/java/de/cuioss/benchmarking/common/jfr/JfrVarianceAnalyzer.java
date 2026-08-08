@@ -123,7 +123,11 @@ public class JfrVarianceAnalyzer {
          * Prints a summary of the variance analysis to stdout.
          */
         // cui-rewrite:disable CuiLogRecordPatternRecipe
-        // This is a CLI analysis tool that outputs formatted reports to console
+        // cui-rewrite:disable CuiLoggerStandardsRecipe
+        // This is a CLI analysis tool that outputs formatted reports to console.
+        // CuiLoggerStandardsRecipe is disabled because it misreads the argument-less
+        // %n conversion as a value placeholder and rewrites it to %s, corrupting these
+        // format strings — see https://github.com/cuioss/cui-open-rewrite/issues/135
         public void printSummary() {
             LOGGER.info("\n=== JFR Variance Analysis Report ===\n");
 

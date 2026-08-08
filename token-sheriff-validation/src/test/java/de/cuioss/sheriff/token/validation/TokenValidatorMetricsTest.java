@@ -110,6 +110,10 @@ class TokenValidatorMetricsTest {
                 .map(StripedRingBufferStatistics::p50).orElse(Duration.ZERO).toNanos() + " ns");
     }
 
+    // cui-rewrite:disable CuiLoggerStandardsRecipe
+    // The timing-report log call below uses the argument-less %n conversion, which
+    // CuiLoggerStandardsRecipe misreads as a value placeholder and rewrites to %s,
+    // corrupting the format string — see https://github.com/cuioss/cui-open-rewrite/issues/135
     @Test
     @DisplayName("Should show timing discrepancy between complete validation and sum of individual steps")
     void shouldShowTimingDiscrepancy() {
@@ -158,6 +162,10 @@ class TokenValidatorMetricsTest {
                         "Complete: " + completeValidationTime + " ns, Sum: " + sumOfSteps + " ns");
     }
 
+    // cui-rewrite:disable CuiLoggerStandardsRecipe
+    // The timing-report log calls below use the argument-less %n conversion, which
+    // CuiLoggerStandardsRecipe misreads as a value placeholder and rewrites to %s,
+    // corrupting the format strings — see https://github.com/cuioss/cui-open-rewrite/issues/135
     @Test
     @DisplayName("Should detect fast operations that might show as empty metrics")
     void shouldDetectFastOperations() {
@@ -188,6 +196,10 @@ class TokenValidatorMetricsTest {
         assertTrue(issuerExtraction.toNanos() >= 0, "ISSUER_EXTRACTION should have a duration");
     }
 
+    // cui-rewrite:disable CuiLoggerStandardsRecipe
+    // The timing-report log call below uses the argument-less %n conversion, which
+    // CuiLoggerStandardsRecipe misreads as a value placeholder and rewrites to %s,
+    // corrupting the format string — see https://github.com/cuioss/cui-open-rewrite/issues/135
     @Test
     @DisplayName("Should measure JWKS operations separately from signature validation")
     void shouldMeasureJwksOperationsSeparately() {

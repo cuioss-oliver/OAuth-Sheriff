@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.token.client.internal;
 
+import org.jspecify.annotations.Nullable;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.http.HttpResponse;
@@ -40,6 +42,10 @@ import java.util.concurrent.Flow;
  * {@link IOException} the instant the running total would exceed {@code maxBytes} — cancelling the
  * subscription so no further bytes are read. Back-channel clients translate that {@link IOException}
  * into the declared {@code TransportException} on their normal {@code IOException} catch path.
+ * <p>
+ * The rejection message names the ceiling <em>and</em> its origin: callers supply a
+ * {@code boundOrigin} descriptor identifying the knob that set the ceiling and whether it is
+ * settable, so a reader of the failure can tell a tunable bound from a fixed one.
  *
  * @since 1.0
  * @author Oliver Wolff
@@ -48,26 +54,30 @@ public final class BoundedContentBodyHandler implements HttpResponse.BodyHandler
 
     private final int maxBytes;
     private final Charset charset;
+    private final String boundOrigin;
 
-    private BoundedContentBodyHandler(int maxBytes, Charset charset) {
+    private BoundedContentBodyHandler(int maxBytes, Charset charset, String boundOrigin) {
         if (maxBytes < 0) {
             throw new IllegalArgumentException("maxBytes must not be negative");
         }
         this.maxBytes = maxBytes;
         this.charset = Objects.requireNonNull(charset, "charset must not be null");
+        this.boundOrigin = Objects.requireNonNull(boundOrigin, "boundOrigin must not be null");
     }
 
     /**
-     * @param maxBytes the maximum number of body bytes to read before failing; must not be negative
+     * @param maxBytes    the maximum number of body bytes to read before failing; must not be negative
+     * @param boundOrigin the human-readable provenance of the ceiling — the knob that set it, and
+     *                    whether it is settable; reported verbatim in the rejection message
      * @return a UTF-8 bounded body handler capped at {@code maxBytes}
      */
-    public static BoundedContentBodyHandler of(int maxBytes) {
-        return new BoundedContentBodyHandler(maxBytes, StandardCharsets.UTF_8);
+    public static BoundedContentBodyHandler of(int maxBytes, String boundOrigin) {
+        return new BoundedContentBodyHandler(maxBytes, StandardCharsets.UTF_8, boundOrigin);
     }
 
     @Override
     public HttpResponse.BodySubscriber<String> apply(HttpResponse.ResponseInfo responseInfo) {
-        return new BoundedStringSubscriber(maxBytes, charset);
+        return new BoundedStringSubscriber(maxBytes, charset, boundOrigin);
     }
 
     /**
@@ -78,14 +88,16 @@ public final class BoundedContentBodyHandler implements HttpResponse.BodyHandler
 
         private final int maxBytes;
         private final Charset charset;
+        private final String boundOrigin;
         private final CompletableFuture<String> result = new CompletableFuture<>();
         private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        private Flow.Subscription subscription;
+        private Flow.@Nullable Subscription subscription;
         private long total;
 
-        BoundedStringSubscriber(int maxBytes, Charset charset) {
+        BoundedStringSubscriber(int maxBytes, Charset charset, String boundOrigin) {
             this.maxBytes = maxBytes;
             this.charset = charset;
+            this.boundOrigin = boundOrigin;
         }
 
         @Override
@@ -105,10 +117,13 @@ public final class BoundedContentBodyHandler implements HttpResponse.BodyHandler
                 int remaining = item.remaining();
                 total += remaining;
                 if (total > maxBytes) {
-                    subscription.cancel();
+                    if (subscription != null) {
+                        subscription.cancel();
+                    }
                     buffer.reset();
                     result.completeExceptionally(new IOException(
-                            "response body exceeds the maximum allowed size of " + maxBytes + " bytes"));
+                            "response body exceeds the maximum allowed size of " + maxBytes + " bytes ("
+                                    + boundOrigin + ")"));
                     return;
                 }
                 byte[] chunk = new byte[remaining];
