@@ -118,8 +118,8 @@ public class TokenSheriffProcessor {
 
         // MicroProfile JWT interface and adapter for CDI injection
         reflectiveClasses.produce(ReflectiveClassBuildItem.builder(
-                        JsonWebToken.class,
-                        JsonWebTokenAdapter.class)
+                JsonWebToken.class,
+                JsonWebTokenAdapter.class)
                 .methods(true)
                 .fields(true)
                 .constructors(true)
