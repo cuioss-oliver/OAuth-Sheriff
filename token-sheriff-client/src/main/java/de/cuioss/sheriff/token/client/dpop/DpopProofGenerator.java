@@ -17,6 +17,8 @@ package de.cuioss.sheriff.token.client.dpop;
 
 import de.cuioss.sheriff.token.client.internal.ClientLogMessages;
 import de.cuioss.sheriff.token.client.internal.JsonEscaper;
+import de.cuioss.sheriff.token.validation.util.EcdsaSignatureFormatConverter;
+import de.cuioss.sheriff.token.validation.util.JwkThumbprintUtil;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -25,8 +27,14 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.MessageDigest;
+import java.security.PublicKey;
 import java.security.Signature;
+import java.security.interfaces.ECPublicKey;
+import java.security.interfaces.EdECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.security.spec.EdECPoint;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
@@ -47,9 +55,20 @@ import java.util.function.Supplier;
  * ({@link #jkt()}), so a stolen bearer token cannot be replayed without the private key
  * ({@code CLIENT-11}, {@code T-TOKEN-REPLAY}).
  * <p>
- * The generator signs with a JDK {@link Signature} (RSA {@code RS256}/{@code RS384}/{@code RS512}) —
- * the engine adds no cryptographic library of its own — and mirrors the {@code DpopProofHelper}
- * conventions already used by the integration harness.
+ * The generator signs with a JDK {@link Signature} — the engine adds no cryptographic library of its
+ * own — and mirrors the {@code DpopProofHelper} conventions already used by the integration harness.
+ * The supported proof-key and algorithm matrix is:
+ * <table border="1">
+ *   <caption>Supported proof keys and signing algorithms</caption>
+ *   <tr><th>Proof key</th><th>Signing algorithms</th></tr>
+ *   <tr><td>RSA</td><td>{@code RS256}, {@code RS384}, {@code RS512}, {@code PS256}</td></tr>
+ *   <tr><td>EC, curve P-256</td><td>{@code ES256}</td></tr>
+ *   <tr><td>OKP, curve Ed25519</td><td>{@code EdDSA}</td></tr>
+ * </table>
+ * <p>
+ * Passing {@code PS256}, {@code ES256} or {@code EdDSA} reaches FAPI 2.0 §5.4.1 conformance through
+ * the DPoP route. The algorithm and the proof key are checked against each other at construction
+ * time, so a mismatch fails fast rather than surfacing later from the JCA layer.
  * <p>
  * <strong>Replay defence:</strong> every emitted proof carries a fresh, single-use {@code jti}. The
  * generator tracks the identifiers it has issued and fails closed if its {@code jti} source ever
@@ -76,6 +95,36 @@ public class DpopProofGenerator {
      */
     private static final int MAX_TRACKED_JTIS = 10_000;
 
+    private static final String KTY_RSA = "RSA";
+    private static final String KTY_EC = "EC";
+    private static final String KTY_OKP = "OKP";
+    private static final String CRV_P256 = "P-256";
+    private static final String CRV_ED25519 = "Ed25519";
+    private static final String ALG_PS256 = "PS256";
+    private static final String ALG_ES256 = "ES256";
+
+    /** Field size of curve P-256 in bits; the guard that rejects any other EC curve. */
+    private static final int P256_FIELD_SIZE_BITS = 256;
+
+    /** Fixed width of a P-256 affine coordinate per RFC 7518 §6.2.1.2. */
+    private static final int P256_COORDINATE_BYTES = 32;
+
+    /** Fixed width of an Ed25519 public key per RFC 8032. */
+    private static final int ED25519_KEY_BYTES = 32;
+
+    /**
+     * The proof-key type ({@code kty}) each supported signing algorithm requires. Consulted at
+     * construction time so an algorithm/key mismatch fails fast instead of surfacing from the JCA
+     * layer at the first {@code sign()} call.
+     */
+    private static final Map<String, String> ALGORITHM_KEY_TYPES = Map.of(
+            "RS256", KTY_RSA,
+            "RS384", KTY_RSA,
+            "RS512", KTY_RSA,
+            ALG_PS256, KTY_RSA,
+            ALG_ES256, KTY_EC,
+            "EdDSA", KTY_OKP);
+
     private final KeyPair keyPair;
     private final String jwtAlgorithm;
     private final String jcaAlgorithm;
@@ -96,8 +145,11 @@ public class DpopProofGenerator {
     /**
      * Creates a generator that mints a random {@code jti} for every proof.
      *
-     * @param keyPair   the RSA proof key pair; must not be {@code null}
-     * @param algorithm the JWT signing algorithm ({@code RS256} / {@code RS384} / {@code RS512})
+     * @param keyPair   the proof key pair (RSA, EC P-256 or OKP Ed25519); must not be {@code null}
+     * @param algorithm the JWT signing algorithm ({@code RS256} / {@code RS384} / {@code RS512} /
+     *                  {@code PS256} / {@code ES256} / {@code EdDSA})
+     * @throws IllegalArgumentException if the algorithm is unsupported, the proof key is not an RSA,
+     *         EC P-256 or OKP Ed25519 key, or the algorithm does not match the proof-key type
      */
     public DpopProofGenerator(KeyPair keyPair, String algorithm) {
         this(keyPair, algorithm, () -> UUID.randomUUID().toString());
@@ -108,21 +160,91 @@ public class DpopProofGenerator {
      * a repeated identifier and assert the reuse defence; production code uses the random-{@code jti}
      * constructor above.
      *
-     * @param keyPair   the RSA proof key pair; must not be {@code null}, public key must be RSA
-     * @param algorithm the JWT signing algorithm ({@code RS256} / {@code RS384} / {@code RS512})
+     * @param keyPair   the proof key pair (RSA, EC P-256 or OKP Ed25519); must not be {@code null}
+     * @param algorithm the JWT signing algorithm ({@code RS256} / {@code RS384} / {@code RS512} /
+     *                  {@code PS256} / {@code ES256} / {@code EdDSA})
      * @param jtiSource the source of proof identifiers; must not be {@code null}
+     * @throws IllegalArgumentException if the algorithm is unsupported, the proof key is not an RSA,
+     *         EC P-256 or OKP Ed25519 key, or the algorithm does not match the proof-key type
      */
     public DpopProofGenerator(KeyPair keyPair, String algorithm, Supplier<String> jtiSource) {
         this.keyPair = Objects.requireNonNull(keyPair, "keyPair must not be null");
         this.jwtAlgorithm = Objects.requireNonNull(algorithm, "algorithm must not be null");
         this.jtiSource = Objects.requireNonNull(jtiSource, "jtiSource must not be null");
         this.jcaAlgorithm = toJcaAlgorithm(algorithm);
-        if (!(keyPair.getPublic() instanceof RSAPublicKey)) {
-            throw new IllegalArgumentException("DPoP proof key must be an RSA key pair");
+        // One JWK map feeds both the header 'jwk' and the cnf.jkt thumbprint, so a proof can never
+        // advertise a key whose thumbprint does not match the embedded JWK.
+        Map<String, Object> jwk = buildJwk(keyPair.getPublic(), algorithm);
+        this.jwkJson = JwkThumbprintUtil.canonicalJson(jwk);
+        this.jkt = JwkThumbprintUtil.computeThumbprint(jwk);
+    }
+
+    /**
+     * Classifies the proof key, verifies it matches the requested signing algorithm, and builds the
+     * canonical JWK members for its key type.
+     *
+     * @param publicKey the proof key's public key
+     * @param algorithm the requested JWT signing algorithm
+     * @return the JWK members required for this key type by RFC 7638
+     * @throws IllegalArgumentException if the key type or curve is unsupported, or the algorithm does
+     *         not match the key type
+     */
+    private static Map<String, Object> buildJwk(PublicKey publicKey, String algorithm) {
+        if (publicKey instanceof RSAPublicKey rsaKey) {
+            requireKeyTypeMatches(algorithm, KTY_RSA);
+            return Map.of(
+                    "kty", KTY_RSA,
+                    "e", base64UrlUnsigned(rsaKey.getPublicExponent()),
+                    "n", base64UrlUnsigned(rsaKey.getModulus()));
         }
-        RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
-        this.jwkJson = rsaJwkJson(publicKey);
-        this.jkt = computeJkt(publicKey);
+        if (publicKey instanceof ECPublicKey ecKey) {
+            requireKeyTypeMatches(algorithm, KTY_EC);
+            int fieldSize = ecKey.getParams().getCurve().getField().getFieldSize();
+            if (fieldSize != P256_FIELD_SIZE_BITS) {
+                throw new IllegalArgumentException(
+                        "DPoP EC proof key must use curve P-256, but the key's field size is %d bits".formatted(
+                                fieldSize));
+            }
+            return Map.of(
+                    "kty", KTY_EC,
+                    "crv", CRV_P256,
+                    // RFC 7518 §6.2.1.2: coordinates are left-padded to the full coordinate width,
+                    // so base64UrlUnsigned (which strips rather than pads) must not be used here.
+                    "x", base64UrlFixedWidth(ecKey.getW().getAffineX(), P256_COORDINATE_BYTES),
+                    "y", base64UrlFixedWidth(ecKey.getW().getAffineY(), P256_COORDINATE_BYTES));
+        }
+        if (publicKey instanceof EdECPublicKey edKey) {
+            requireKeyTypeMatches(algorithm, KTY_OKP);
+            String curve = edKey.getParams().getName();
+            if (!CRV_ED25519.equals(curve)) {
+                throw new IllegalArgumentException(
+                        "DPoP OKP proof key must use curve Ed25519, but the key uses " + curve);
+            }
+            return Map.of(
+                    "kty", KTY_OKP,
+                    "crv", CRV_ED25519,
+                    "x", encodeEd25519Point(edKey.getPoint()));
+        }
+        throw new IllegalArgumentException(
+                "DPoP proof key must be an RSA, EC P-256 or OKP Ed25519 key pair, but was "
+                        + publicKey.getAlgorithm());
+    }
+
+    /**
+     * Fails fast when the requested signing algorithm does not match the proof key's type — for
+     * example {@code ES256} with an RSA pair, or {@code RS256} with an EC pair.
+     *
+     * @param algorithm     the requested JWT signing algorithm
+     * @param actualKeyType the {@code kty} of the supplied proof key
+     * @throws IllegalArgumentException if the algorithm requires a different key type
+     */
+    private static void requireKeyTypeMatches(String algorithm, String actualKeyType) {
+        String requiredKeyType = ALGORITHM_KEY_TYPES.get(algorithm);
+        if (!actualKeyType.equals(requiredKeyType)) {
+            throw new IllegalArgumentException(
+                    "DPoP signing algorithm %s requires a %s proof key, but the key pair is %s".formatted(
+                            algorithm, requiredKeyType, actualKeyType));
+        }
     }
 
     /**
@@ -229,36 +351,100 @@ public class DpopProofGenerator {
     private String sign(String signingInput) {
         try {
             Signature signature = Signature.getInstance(jcaAlgorithm);
+            if (ALG_PS256.equals(jwtAlgorithm)) {
+                // The JCA RSASSA-PSS instance carries no defaults — PS256's parameters are explicit.
+                signature.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+            }
             signature.initSign(keyPair.getPrivate());
             signature.update(signingInput.getBytes(StandardCharsets.UTF_8));
-            return BASE64_URL.encodeToString(signature.sign());
+            byte[] rawSignature = signature.sign();
+            if (ALG_ES256.equals(jwtAlgorithm)) {
+                // SHA256withECDSA emits ASN.1/DER; JOSE requires the IEEE P1363 R||S concatenation.
+                rawSignature = EcdsaSignatureFormatConverter.toJoseSignature(rawSignature, ALG_ES256);
+            }
+            return BASE64_URL.encodeToString(rawSignature);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Failed to sign DPoP proof", e);
         }
     }
 
-    private static String rsaJwkJson(RSAPublicKey publicKey) {
-        // Canonical RFC 7638 member order for RSA: e, kty, n. Reused as the header 'jwk' too.
-        return "{\"e\":\"" + base64UrlUnsigned(publicKey.getPublicExponent())
-                + "\",\"kty\":\"RSA\",\"n\":\"" + base64UrlUnsigned(publicKey.getModulus()) + "\"}";
-    }
-
-    private static String computeJkt(RSAPublicKey publicKey) {
-        try {
-            byte[] hash = MessageDigest.getInstance("SHA-256")
-                    .digest(rsaJwkJson(publicKey).getBytes(StandardCharsets.UTF_8));
-            return BASE64_URL.encodeToString(hash);
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("SHA-256 not available for JWK thumbprint", e);
-        }
-    }
-
+    /**
+     * Encodes an RSA JWK member as an unsigned big-endian base64url value, stripping the sign byte
+     * {@link BigInteger#toByteArray()} prepends. Suitable for {@code e} and {@code n}, which are
+     * variable-width; it MUST NOT be used for EC coordinates, which are fixed-width and require
+     * left-padding — see {@link #base64UrlFixedWidth(BigInteger, int)}.
+     */
     private static String base64UrlUnsigned(BigInteger value) {
         byte[] bytes = value.toByteArray();
         if (bytes.length > 1 && bytes[0] == 0) {
             bytes = Arrays.copyOfRange(bytes, 1, bytes.length);
         }
         return BASE64_URL.encodeToString(bytes);
+    }
+
+    /**
+     * Encodes a fixed-width JWK member as a big-endian base64url value left-padded with zeros to
+     * exactly {@code width} bytes, per RFC 7518 §6.2.1.2.
+     *
+     * @param value the non-negative value to encode
+     * @param width the fixed member width in bytes
+     * @return the base64url encoding of the zero-padded big-endian value
+     * @throws IllegalArgumentException if the value does not fit into {@code width} bytes
+     */
+    private static String base64UrlFixedWidth(BigInteger value, int width) {
+        return BASE64_URL.encodeToString(toFixedWidth(value, width));
+    }
+
+    /**
+     * Renders a non-negative value as a big-endian byte array of exactly {@code width} bytes.
+     *
+     * @param value the non-negative value to render
+     * @param width the target width in bytes
+     * @return the zero-padded big-endian representation
+     * @throws IllegalArgumentException if the value does not fit into {@code width} bytes
+     */
+    private static byte[] toFixedWidth(BigInteger value, int width) {
+        byte[] magnitude = value.toByteArray();
+        int offset = 0;
+        while (offset < magnitude.length - 1 && magnitude[offset] == 0) {
+            offset++;
+        }
+        int significantLength = magnitude.length - offset;
+        if (significantLength > width) {
+            throw new IllegalArgumentException(
+                    "JWK member is %d bytes, exceeds the %d-byte member width".formatted(significantLength, width));
+        }
+        byte[] fixedWidth = new byte[width];
+        System.arraycopy(magnitude, offset, fixedWidth, width - significantLength, significantLength);
+        return fixedWidth;
+    }
+
+    /**
+     * Encodes an Ed25519 public point as the RFC 8032 32-byte {@code x} member: the point's
+     * {@code y} coordinate big-endian left-padded to 32 bytes, byte-reversed to little-endian, with
+     * the most significant bit of the final byte set when {@code x} is odd.
+     * <p>
+     * This is the exact inverse of {@code JwkKeyHandler.parseOkpKey}, the reference implementation
+     * for the encoding.
+     */
+    private static String encodeEd25519Point(EdECPoint point) {
+        byte[] encoded = toFixedWidth(point.getY(), ED25519_KEY_BYTES);
+        reverseInPlace(encoded);
+        if (point.isXOdd()) {
+            encoded[encoded.length - 1] |= (byte) 0x80;
+        }
+        return BASE64_URL.encodeToString(encoded);
+    }
+
+    /**
+     * Reverses a byte array in place (big-endian to little-endian conversion).
+     */
+    private static void reverseInPlace(byte[] array) {
+        for (int i = 0, j = array.length - 1; i < j; i++, j--) {
+            byte tmp = array[i];
+            array[i] = array[j];
+            array[j] = tmp;
+        }
     }
 
     private static String encode(String json) {
@@ -270,6 +456,9 @@ public class DpopProofGenerator {
             case "RS256" -> "SHA256withRSA";
             case "RS384" -> "SHA384withRSA";
             case "RS512" -> "SHA512withRSA";
+            case ALG_PS256 -> "RSASSA-PSS";
+            case ALG_ES256 -> "SHA256withECDSA";
+            case "EdDSA" -> "Ed25519";
             default -> throw new IllegalArgumentException("unsupported DPoP signing algorithm: " + jwtAlgorithm);
         };
     }
