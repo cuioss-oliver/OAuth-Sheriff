@@ -403,7 +403,7 @@ class EcdsaSignatureFormatConverterTest {
         @DisplayName("Should throw SignatureException for malformed DER input")
         void shouldThrowForMalformedDer(String description, byte[] derSignature) {
             var exception = assertThrows(SignatureException.class, () ->
-                    EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "ES256"),
+                            EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "ES256"),
                     "Malformed DER (%s) must be rejected".formatted(description));
 
             assertTrue(exception.getMessage().startsWith("Invalid DER signature"),
