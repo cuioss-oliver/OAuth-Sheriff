@@ -16,12 +16,22 @@
 package de.cuioss.sheriff.token.validation.util;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.Signature;
 import java.security.SignatureException;
+import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -289,6 +299,148 @@ class EcdsaSignatureFormatConverterTest {
         byte[] result2 = EcdsaSignatureFormatConverter.toJCACompatibleSignature(ieeeP1363Signature, "ES256");
 
         assertArrayEquals(result1, result2, "Conversion should produce deterministic results");
+    }
+
+    @Nested
+    @DisplayName("Outbound ASN.1/DER to IEEE P1363 conversion")
+    class ToJoseSignatureTests {
+
+        private static final byte[] PAYLOAD = "dpop-proof-payload".getBytes(StandardCharsets.UTF_8);
+
+        @ParameterizedTest(name = "{0} / {1}")
+        @CsvSource({"secp256r1, ES256, 64", "secp384r1, ES384, 96", "secp521r1, ES512, 132"})
+        @DisplayName("Should produce a P1363 signature the JDK verifies natively")
+        void shouldProduceJdkVerifiableP1363Signature(String curve, String algorithm, int expectedLength) throws Exception {
+            var generator = KeyPairGenerator.getInstance("EC");
+            generator.initialize(new ECGenParameterSpec(curve));
+            KeyPair keyPair = generator.generateKeyPair();
+
+            var signer = Signature.getInstance("SHA256withECDSA");
+            signer.initSign(keyPair.getPrivate());
+            signer.update(PAYLOAD);
+            byte[] derSignature = signer.sign();
+
+            byte[] joseSignature = EcdsaSignatureFormatConverter.toJoseSignature(derSignature, algorithm);
+
+            var verifier = Signature.getInstance("SHA256withECDSAinP1363Format");
+            verifier.initVerify(keyPair.getPublic());
+            verifier.update(PAYLOAD);
+
+            assertAll("JDK-native P1363 verification",
+                    () -> assertEquals(expectedLength, joseSignature.length,
+                            "P1363 signature width must match the curve"),
+                    () -> assertTrue(verifier.verify(joseSignature),
+                            "JDK must verify the converted P1363 signature"));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @CsvSource({"ES256, 32", "ES384, 48", "ES512, 66"})
+        @DisplayName("Should round-trip P1363 to DER and back to the identical bytes")
+        void shouldRoundTripP1363ToDerAndBack(String algorithm, int componentSize) throws Exception {
+            byte[] original = new byte[componentSize * 2];
+            // R keeps the high bit clear, S sets it — exercising both the padded and unpadded DER INTEGER forms
+            Arrays.fill(original, 0, componentSize, (byte) 0x42);
+            Arrays.fill(original, componentSize, original.length, (byte) 0x99);
+
+            byte[] derSignature = EcdsaSignatureFormatConverter.toJCACompatibleSignature(original, algorithm);
+            byte[] roundTripped = EcdsaSignatureFormatConverter.toJoseSignature(derSignature, algorithm);
+
+            assertArrayEquals(original, roundTripped, "P1363 -> DER -> P1363 must be lossless");
+        }
+
+        @Test
+        @DisplayName("Should left-pad a component whose big-endian form is shorter than the component width")
+        void shouldLeftPadShortComponent() throws Exception {
+            byte[] original = new byte[64];
+            // R: three leading zero bytes DER drops and the conversion must restore
+            original[3] = (byte) 0x7F;
+            Arrays.fill(original, 4, 32, (byte) 0x11);
+            // S: high bit set, so DER prepends a 0x00 pad byte the conversion must strip
+            Arrays.fill(original, 32, 64, (byte) 0xF3);
+
+            byte[] derSignature = EcdsaSignatureFormatConverter.toJCACompatibleSignature(original, "ES256");
+            byte[] roundTripped = EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "ES256");
+
+            assertArrayEquals(original, roundTripped,
+                    "Short and high-bit components must round-trip at full component width");
+        }
+
+        @Test
+        @DisplayName("Should restore an all-zero component as a zero-filled P1363 component")
+        void shouldRestoreZeroComponent() throws Exception {
+            byte[] original = new byte[64];
+            Arrays.fill(original, 32, 64, (byte) 0x2A);
+
+            byte[] derSignature = EcdsaSignatureFormatConverter.toJCACompatibleSignature(original, "ES256");
+            byte[] roundTripped = EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "ES256");
+
+            assertArrayEquals(original, roundTripped, "An all-zero R component must round-trip to 32 zero bytes");
+        }
+
+        @Test
+        @DisplayName("Should throw SignatureException for null signature")
+        void shouldThrowForNullSignature() {
+            var exception = assertThrows(SignatureException.class, () ->
+                    EcdsaSignatureFormatConverter.toJoseSignature(null, "ES256"));
+
+            assertEquals("Signature cannot be null", exception.getMessage());
+        }
+
+        @Test
+        @DisplayName("Should throw SignatureException for unsupported algorithm")
+        void shouldThrowForUnsupportedAlgorithm() {
+            byte[] derSignature = {0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01};
+
+            var exception = assertThrows(SignatureException.class, () ->
+                    EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "RS256"));
+
+            assertTrue(exception.getMessage().contains("Unsupported ECDSA algorithm"),
+                    "Message should name the unsupported algorithm rejection");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("malformedDerSignatures")
+        @DisplayName("Should throw SignatureException for malformed DER input")
+        void shouldThrowForMalformedDer(String description, byte[] derSignature) {
+            var exception = assertThrows(SignatureException.class, () ->
+                            EcdsaSignatureFormatConverter.toJoseSignature(derSignature, "ES256"),
+                    "Malformed DER (%s) must be rejected".formatted(description));
+
+            assertTrue(exception.getMessage().startsWith("Invalid DER signature"),
+                    "Message should identify the malformed DER encoding, was: " + exception.getMessage());
+        }
+
+        static Stream<Arguments> malformedDerSignatures() {
+            return Stream.of(
+                    Arguments.of("empty input", new byte[0]),
+                    Arguments.of("wrong SEQUENCE tag", new byte[]{0x31, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01}),
+                    Arguments.of("truncated after SEQUENCE tag", new byte[]{0x30}),
+                    Arguments.of("SEQUENCE length exceeds available bytes", new byte[]{0x30, 0x20, 0x02, 0x01, 0x01}),
+                    Arguments.of("unsupported long-form length", new byte[]{0x30, (byte) 0x85, 0x00, 0x00, 0x00, 0x00, 0x01}),
+                    Arguments.of("wrong INTEGER tag for R", new byte[]{0x30, 0x06, 0x04, 0x01, 0x01, 0x02, 0x01, 0x01}),
+                    Arguments.of("truncated R content", new byte[]{0x30, 0x03, 0x02, 0x05, 0x01}),
+                    Arguments.of("zero-length R INTEGER", new byte[]{0x30, 0x05, 0x02, 0x00, 0x02, 0x01, 0x01}),
+                    Arguments.of("trailing bytes after S",
+                            new byte[]{0x30, 0x09, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00}),
+                    Arguments.of("R component wider than the component size", oversizedRComponent()));
+        }
+
+        /**
+         * Builds a structurally valid DER SEQUENCE whose R INTEGER carries 33 significant bytes —
+         * one more than the ES256 component width.
+         */
+        static byte[] oversizedRComponent() {
+            byte[] derSignature = new byte[40];
+            derSignature[0] = 0x30;
+            derSignature[1] = 0x26; // 38 content bytes
+            derSignature[2] = 0x02;
+            derSignature[3] = 0x21; // 33-byte R component
+            Arrays.fill(derSignature, 4, 37, (byte) 0x01);
+            derSignature[37] = 0x02;
+            derSignature[38] = 0x01;
+            derSignature[39] = 0x01;
+            return derSignature;
+        }
     }
 
     /**

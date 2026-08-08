@@ -50,17 +50,28 @@ public final class JwkThumbprintUtil {
      * @throws IllegalArgumentException if the JWK is missing required fields
      */
     public static String computeThumbprint(Map<String, Object> jwkMap) {
-        String kty = getRequired(jwkMap, "kty");
-        String minimalJson = buildMinimalJson(jwkMap, kty);
+        String minimalJson = canonicalJson(jwkMap);
         byte[] hash = Sha256Util.digest(minimalJson.getBytes(StandardCharsets.UTF_8));
         return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
     }
 
     /**
-     * Builds the minimal JSON representation with members in lexicographic order
-     * as required by RFC 7638 Section 3.2.
+     * Builds the canonical minimal JSON representation of a JWK with the required members in
+     * lexicographic order as required by RFC 7638 Section 3.2.
+     *
+     * <p>This is the exact string {@link #computeThumbprint(Map)} hashes. A caller that must both
+     * embed a JWK and publish its thumbprint — the DPoP proof header {@code jwk} together with
+     * {@code cnf.jkt} — derives both from this one builder, so it cannot emit a header whose
+     * thumbprint does not match the embedded key.</p>
+     *
+     * @param jwkMap the JWK as a {@code Map<String, Object>} containing at least {@code kty}
+     *               and the required members for that key type
+     * @return the canonical minimal JSON representation
+     * @throws IllegalArgumentException if the key type is unsupported or a required member is missing
+     * @since 1.0
      */
-    private static String buildMinimalJson(Map<String, Object> jwkMap, String kty) {
+    public static String canonicalJson(Map<String, Object> jwkMap) {
+        String kty = getRequired(jwkMap, "kty");
         return switch (kty) {
             case "RSA" -> buildJson(
                     "e", getRequired(jwkMap, "e"),
