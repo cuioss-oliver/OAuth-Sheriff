@@ -15,11 +15,16 @@
  */
 package de.cuioss.sheriff.token.validation.util;
 
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,6 +32,7 @@ class JwkThumbprintUtilTest {
 
     private static final String EC_X = "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU";
     private static final String EC_Y = "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0";
+    private static final String OKP_X = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo";
 
     /**
      * Test vector from RFC 7638 Section 3.1.
@@ -69,7 +75,7 @@ class JwkThumbprintUtilTest {
         Map<String, Object> okpJwk = Map.of(
                 "kty", "OKP",
                 "crv", "Ed25519",
-                "x", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+                "x", OKP_X
         );
 
         String thumbprint = JwkThumbprintUtil.computeThumbprint(okpJwk);
@@ -167,5 +173,81 @@ class JwkThumbprintUtilTest {
                 JwkThumbprintUtil.computeThumbprint(jwkMinimal),
                 JwkThumbprintUtil.computeThumbprint(jwkWithExtras)
         );
+    }
+
+    @Nested
+    @DisplayName("Canonical JSON builder")
+    class CanonicalJsonTests {
+
+        @Test
+        @DisplayName("Should emit e, kty, n in lexicographic order for an RSA key")
+        void shouldEmitCanonicalMemberOrderForRsaKey() {
+            Map<String, Object> rsaJwk = Map.of("kty", "RSA", "n", "abc", "e", "AQAB", "kid", "ignored");
+
+            assertEquals("{\"e\":\"AQAB\",\"kty\":\"RSA\",\"n\":\"abc\"}",
+                    JwkThumbprintUtil.canonicalJson(rsaJwk));
+        }
+
+        @Test
+        @DisplayName("Should emit crv, kty, x, y in lexicographic order for an EC key")
+        void shouldEmitCanonicalMemberOrderForEcKey() {
+            Map<String, Object> ecJwk = Map.of("kty", "EC", "crv", "P-256", "x", EC_X, "y", EC_Y, "kid", "ignored");
+
+            assertEquals("{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"" + EC_X + "\",\"y\":\"" + EC_Y + "\"}",
+                    JwkThumbprintUtil.canonicalJson(ecJwk));
+        }
+
+        @Test
+        @DisplayName("Should emit crv, kty, x in lexicographic order for an OKP key")
+        void shouldEmitCanonicalMemberOrderForOkpKey() {
+            Map<String, Object> okpJwk = Map.of("kty", "OKP", "crv", "Ed25519", "x", OKP_X, "kid", "ignored");
+
+            assertEquals("{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"" + OKP_X + "\"}",
+                    JwkThumbprintUtil.canonicalJson(okpJwk));
+        }
+
+        @Test
+        @DisplayName("Should reject an unsupported key type")
+        void shouldRejectUnsupportedKeyType() {
+            Map<String, Object> jwk = Map.of("kty", "oct", "k", "abc");
+
+            assertThrows(IllegalArgumentException.class, () -> JwkThumbprintUtil.canonicalJson(jwk));
+        }
+
+        @Test
+        @DisplayName("Should reject a missing required member")
+        void shouldRejectMissingRequiredMember() {
+            Map<String, Object> jwk = Map.of("kty", "EC", "crv", "P-256", "x", EC_X);
+            // Missing 'y'
+
+            assertThrows(IllegalArgumentException.class, () -> JwkThumbprintUtil.canonicalJson(jwk));
+        }
+
+        @Test
+        @DisplayName("Should reject a missing kty")
+        void shouldRejectMissingKty() {
+            Map<String, Object> jwk = Map.of("n", "abc", "e", "AQAB");
+
+            assertThrows(IllegalArgumentException.class, () -> JwkThumbprintUtil.canonicalJson(jwk));
+        }
+
+        @ParameterizedTest
+        @MethodSource("delegationVectors")
+        @DisplayName("Should pin computeThumbprint to the SHA-256 of canonicalJson")
+        void shouldPinComputeThumbprintToCanonicalJson(Map<String, Object> jwk) {
+            String canonicalJson = JwkThumbprintUtil.canonicalJson(jwk);
+            byte[] expectedHash = Sha256Util.digest(canonicalJson.getBytes(StandardCharsets.UTF_8));
+            String expectedThumbprint = Base64.getUrlEncoder().withoutPadding().encodeToString(expectedHash);
+
+            assertEquals(expectedThumbprint, JwkThumbprintUtil.computeThumbprint(jwk),
+                    "computeThumbprint must hash exactly the canonicalJson output so the two cannot drift");
+        }
+
+        static Stream<Map<String, Object>> delegationVectors() {
+            return Stream.of(
+                    Map.of("kty", "RSA", "n", "abc", "e", "AQAB"),
+                    Map.of("kty", "EC", "crv", "P-256", "x", EC_X, "y", EC_Y),
+                    Map.of("kty", "OKP", "crv", "Ed25519", "x", OKP_X));
+        }
     }
 }
