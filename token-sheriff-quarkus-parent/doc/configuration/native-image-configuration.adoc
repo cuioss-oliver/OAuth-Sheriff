@@ -23,15 +23,23 @@ quarkus.native.resources.includes=**/*.p12,**/*.crt,**/*.key,**/*.pem
 
 === Reflection Configuration
 
-The Token-Sheriff Quarkus deployment automatically registers the following classes for reflection:
+The core library ships its own GraalVM reflection metadata inside the `token-sheriff-validation`
+jar, under `META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/`. GraalVM
+auto-detects that metadata from the classpath, so the following classes are registered for
+reflection without any extension-side or application-side configuration:
 
 * **JWT Validation Pipeline**: `NonValidatingJwtParser`, `TokenSignatureValidator`, `TokenHeaderValidator`, `TokenClaimValidator`, `TokenBuilder`, `DecodedJwt`
 * **JWKS Loading**: `HttpJwksLoader`, `JWKSKeyLoader`, `KeyInfo`, `JwksParser`
 * **Token Content**: `AccessTokenContent`, `IdTokenContent`, `UnvalidatedRefreshToken`, `ClaimValue`
 * **Security/Algorithm**: `SignatureAlgorithmPreferences`, `JwkAlgorithmPreferences`, `SecurityEventCounter`
 
-All reflection classes are registered automatically by the deployment module's build steps
-(see `TokenSheriffProcessor`) — no manual `reflect-config.json` entries are required.
+Because this metadata travels with the core jar, it applies to Quarkus and non-Quarkus native
+builds alike — no manual `reflect-config.json` entries are required in consuming applications.
+
+The Quarkus deployment module (`TokenSheriffProcessor`) registers only the types the extension
+itself owns or bridges, such as the Micrometer `MeterRegistry`, the MicroProfile `JsonWebToken`
+adapter, and the CDI-discoverable claim mapper interface. It does not declare the core library's
+reflection contract.
 
 === Resource Configuration
 
@@ -170,7 +178,7 @@ quarkus.native.container-runtime-options=-m=64m
 
 * Native image size: 96-104MB (distroless: 104MB, JFR/UBI: 96MB)
 * Startup time: <1 second
-* Reflection classes: registered automatically by `TokenSheriffProcessor`
+* Reflection classes: registered automatically from the metadata shipped in the `token-sheriff-validation` jar
 * Security services: All enabled for JWT support
 
 [source,bash]
@@ -185,6 +193,6 @@ curl http://localhost:8080/q/health/ready
 
 == Troubleshooting
 
-* **Missing Reflection**: Ensure token-sheriff-validation module is built before native image
+* **Missing Reflection**: Ensure the `token-sheriff-validation` jar is on the native-image classpath and that its `META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/` metadata is intact — a shaded or repackaged jar that drops `META-INF/native-image` entries loses the reflection registrations
 * **Build Memory Issues**: Increase `native-image-xmx` to 8g or higher
 * **Runtime Issues**: Verify security services are enabled; check resource inclusion for certificates

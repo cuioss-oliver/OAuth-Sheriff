@@ -75,6 +75,26 @@ This library uses DSL-JSON for secure, high-performance JSON parsing with config
 DSL-JSON provides compile-time code generation and actual enforcement of security constraints,
 unlike reflection-based parsers that often ignore configured limits.
 
+== Native Image
+
+The library is usable in a GraalVM native image on its own. No Quarkus extension is required to
+obtain reflection metadata — the artifact ships its own GraalVM configuration under:
+
+[source,text]
+----
+META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/
+----
+
+GraalVM auto-detects that directory from the jar, so the validation pipeline, JWKS loading, token
+content, claim mapping, and DSL-JSON converter types are registered for reflection without any
+application-side `reflect-config.json`. The bundled `native-image.properties` also applies
+`--initialize-at-run-time` for `HttpJwksLoader` automatically, keeping its HTTP client state out
+of the image heap.
+
+Consuming applications therefore need no Token-Sheriff-specific native-image configuration. When
+repackaging the artifact — for example into a shaded or uber jar — preserve the
+`META-INF/native-image` entries, since dropping them removes the reflection registrations.
+
 == Test Support
 
 [[test-artifact]]
