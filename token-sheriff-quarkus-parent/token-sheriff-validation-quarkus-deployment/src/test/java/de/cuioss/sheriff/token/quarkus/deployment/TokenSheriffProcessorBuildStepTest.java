@@ -17,8 +17,6 @@ package de.cuioss.sheriff.token.quarkus.deployment;
 
 import de.cuioss.sheriff.token.quarkus.mapper.DiscoverableClaimMapper;
 import de.cuioss.sheriff.token.quarkus.producer.JsonWebTokenAdapter;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
@@ -71,19 +69,16 @@ class TokenSheriffProcessorBuildStepTest {
         for (ReflectiveClassBuildItem item : reflectiveItems) {
             registered.addAll(item.getClassNames());
         }
-        assertAll("Quarkus-specific reflection registrations",
-                () -> assertTrue(registered.contains(MeterRegistry.class.getName()),
-                        "MeterRegistry should stay registered by the extension"),
-                () -> assertTrue(registered.contains(JsonWebToken.class.getName()),
-                        "JsonWebToken should stay registered by the extension"),
-                () -> assertTrue(registered.contains(JsonWebTokenAdapter.class.getName()),
-                        "JsonWebTokenAdapter should stay registered by the extension"),
-                () -> assertTrue(registered.contains(DiscoverableClaimMapper.class.getName()),
-                        "DiscoverableClaimMapper should stay registered by the extension"),
-                () -> assertFalse(registered.contains(TokenValidator.class.getName()),
-                        "Core types ship their own metadata and must not creep back into the extension"),
-                () -> assertFalse(registered.contains(AccessTokenContent.class.getName()),
-                        "Core types ship their own metadata and must not creep back into the extension"));
+        Set<String> expected = Set.of(
+                MeterRegistry.class.getName(),
+                JsonWebToken.class.getName(),
+                JsonWebTokenAdapter.class.getName(),
+                DiscoverableClaimMapper.class.getName());
+        assertEquals(expected, registered,
+                "The extension must register exactly its own bridge types. Core types such as "
+                        + "TokenValidator and AccessTokenContent ship their own GraalVM metadata with "
+                        + "token-sheriff-validation and must not creep back into the extension, and no "
+                        + "further type may be added here without updating this contract.");
     }
 
     @Test
