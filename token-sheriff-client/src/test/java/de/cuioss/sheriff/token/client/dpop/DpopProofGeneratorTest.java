@@ -94,7 +94,7 @@ class DpopProofGeneratorTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"RS256", "PS256", "ES256", "EdDSA"})
+    @ValueSource(strings = {"RS256", "RS384", "RS512", "PS256", "ES256", "EdDSA"})
     @DisplayName("Should build a signed dpop+jwt proof carrying the htm/htu/jti/iat claims and embedded JWK")
     void shouldBuildSignedProof(String algorithm) {
         KeyPair proofKey = proofKeyFor(algorithm);
@@ -122,7 +122,7 @@ class DpopProofGeneratorTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"RS256", "PS256", "ES256", "EdDSA"})
+    @ValueSource(strings = {"RS256", "RS384", "RS512", "PS256", "ES256", "EdDSA"})
     @DisplayName("Should expose a stable jkt computed over the key type's canonical JWK members")
     void shouldExposeJktOverCanonicalMembers(String algorithm) {
         KeyPair proofKey = proofKeyFor(algorithm);
@@ -209,7 +209,9 @@ class DpopProofGeneratorTest {
             "EdDSA, RSA",
             "RS256, EC",
             "PS256, EC",
+            "EdDSA, EC",
             "RS256, OKP",
+            "PS256, OKP",
             "ES256, OKP"
     })
     @DisplayName("Should reject an algorithm that does not match the proof-key type")
@@ -292,6 +294,8 @@ class DpopProofGeneratorTest {
         try {
             Signature verifier = Signature.getInstance(switch (algorithm) {
                 case "RS256" -> "SHA256withRSA";
+                case "RS384" -> "SHA384withRSA";
+                case "RS512" -> "SHA512withRSA";
                 case "PS256" -> "RSASSA-PSS";
                 case "ES256" -> "SHA256withECDSAinP1363Format";
                 case "EdDSA" -> "Ed25519";
