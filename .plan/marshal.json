@@ -68,7 +68,7 @@
     "phase-6-finalize": {
       "max_iterations": 3,
       "finalize_without_asking": true,
-      "loop_back_without_asking": false,
+      "loop_back_without_asking": true,
       "checks_wait_timeout_seconds": 600,
       "steps": {
         "default:finalize-step-sync-baseline": {

@@ -15,30 +15,27 @@
  */
 package de.cuioss.sheriff.token.quarkus.deployment;
 
-import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
-import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
-import de.cuioss.sheriff.token.commons.transport.ParserConfig;
-import de.cuioss.sheriff.token.validation.IssuerConfig;
-import de.cuioss.sheriff.token.validation.IssuerConfigCache;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
-import de.cuioss.sheriff.token.validation.domain.claim.mapper.IdentityMapper;
-import de.cuioss.sheriff.token.validation.domain.claim.mapper.ScopeMapper;
-import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
-import de.cuioss.sheriff.token.validation.jwks.http.HttpJwksLoader;
+import de.cuioss.sheriff.token.quarkus.mapper.DiscoverableClaimMapper;
+import de.cuioss.sheriff.token.quarkus.producer.JsonWebTokenAdapter;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
 import io.quarkus.arc.deployment.UnremovableBeanBuildItem;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.devui.spi.JsonRPCProvidersBuildItem;
 import io.quarkus.devui.spi.page.CardPageBuildItem;
+import org.eclipse.microprofile.jwt.JsonWebToken;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,127 +43,110 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for {@link TokenSheriffProcessor} build step methods.
  */
 @EnableTestLogger
+@DisplayName("Tests for TokenSheriffProcessor build steps")
 class TokenSheriffProcessorBuildStepTest {
 
     private final TokenSheriffProcessor processor = new TokenSheriffProcessor();
 
     @Test
+    @DisplayName("Should create the feature build item")
     void shouldCreateFeatureBuildItem() {
-        // Act
         FeatureBuildItem featureItem = processor.feature();
 
-        // Assert
         assertNotNull(featureItem);
         assertEquals("token-sheriff", featureItem.getName());
     }
 
     @Test
-    void shouldRegisterJwtValidationConstructorClassesForReflection() {
-        // Act
-        ReflectiveClassBuildItem reflectiveItem = processor.registerJwtValidationConstructorClassesForReflection();
+    @DisplayName("Should register Quarkus-specific types for reflection and no core types")
+    void shouldRegisterQuarkusSpecificClassesForReflection() {
+        List<ReflectiveClassBuildItem> reflectiveItems = new ArrayList<>();
+        BuildProducer<ReflectiveClassBuildItem> producer = reflectiveItems::add;
 
-        // Assert
-        assertNotNull(reflectiveItem);
-        assertTrue(reflectiveItem.getClassNames().contains(TokenValidator.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(IssuerConfigCache.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(SecurityEventCounter.class.getName()));
-        assertFalse(reflectiveItem.getClassNames().contains(IssuerConfig.class.getName()));
-        assertFalse(reflectiveItem.getClassNames().contains(ParserConfig.class.getName()));
+        processor.registerQuarkusSpecificClassesForReflection(producer);
+
+        Set<String> registered = new HashSet<>();
+        for (ReflectiveClassBuildItem item : reflectiveItems) {
+            registered.addAll(item.getClassNames());
+        }
+        Set<String> expected = Set.of(
+                MeterRegistry.class.getName(),
+                JsonWebToken.class.getName(),
+                JsonWebTokenAdapter.class.getName(),
+                DiscoverableClaimMapper.class.getName());
+        assertEquals(expected, registered,
+                "The extension must register exactly its own bridge types. Core types such as "
+                        + "TokenValidator and AccessTokenContent ship their own GraalVM metadata with "
+                        + "token-sheriff-validation and must not creep back into the extension, and no "
+                        + "further type may be added here without updating this contract.");
     }
 
     @Test
-    void shouldRegisterJwtConfigurationClassesForReflection() {
-        // Act
-        ReflectiveClassBuildItem reflectiveItem = processor.registerJwtConfigurationClassesForReflection();
+    @DisplayName("Should register each Quarkus-specific type with the expected reflection flags")
+    void shouldRegisterQuarkusSpecificClassesWithExpectedReflectionFlags() {
+        List<ReflectiveClassBuildItem> reflectiveItems = new ArrayList<>();
+        BuildProducer<ReflectiveClassBuildItem> producer = reflectiveItems::add;
 
-        // Assert
-        assertNotNull(reflectiveItem);
-        assertTrue(reflectiveItem.getClassNames().contains(IssuerConfig.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(ParserConfig.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(HttpJwksLoaderConfig.class.getName()));
-        // These classes are in the constructor group
-        assertFalse(reflectiveItem.getClassNames().contains(TokenValidator.class.getName()));
+        processor.registerQuarkusSpecificClassesForReflection(producer);
+
+        Map<String, ReflectiveClassBuildItem> byClassName = new HashMap<>();
+        for (ReflectiveClassBuildItem item : reflectiveItems) {
+            for (String className : item.getClassNames()) {
+                byClassName.put(className, item);
+            }
+        }
+        assertAll("per-type reflection flags",
+                () -> assertReflectionFlags(byClassName, MeterRegistry.class, true, false, true),
+                () -> assertReflectionFlags(byClassName, JsonWebToken.class, true, true, true),
+                () -> assertReflectionFlags(byClassName, JsonWebTokenAdapter.class, true, true, true),
+                () -> assertReflectionFlags(byClassName, DiscoverableClaimMapper.class, false, false, true));
+    }
+
+    private static void assertReflectionFlags(Map<String, ReflectiveClassBuildItem> byClassName,
+            Class<?> type, boolean methods, boolean fields, boolean constructors) {
+        ReflectiveClassBuildItem item = byClassName.get(type.getName());
+        assertNotNull(item, type.getName() + " should be registered for reflection");
+        assertAll(type.getSimpleName() + " reflection flags",
+                () -> assertEquals(methods, item.isMethods(), "methods flag for " + type.getName()),
+                () -> assertEquals(fields, item.isFields(), "fields flag for " + type.getName()),
+                () -> assertEquals(constructors, item.isConstructors(),
+                        "constructors flag for " + type.getName()));
     }
 
     @Test
-    void shouldRegisterJwtTokenContentClassesForReflection() {
-        // Act
-        ReflectiveClassBuildItem reflectiveItem = processor.registerJwtTokenContentClassesForReflection();
-
-        // Assert
-        assertNotNull(reflectiveItem);
-        assertTrue(reflectiveItem.getClassNames().contains(AccessTokenContent.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(ClaimValue.class.getName()));
-        // Claim mappers are in separate group
-        assertFalse(reflectiveItem.getClassNames().contains(IdentityMapper.class.getName()));
-    }
-
-    @Test
-    void shouldRegisterJwtClaimMapperClassesForReflection() {
-        // Act
-        ReflectiveClassBuildItem reflectiveItem = processor.registerJwtClaimMapperClassesForReflection();
-
-        // Assert
-        assertNotNull(reflectiveItem);
-        assertTrue(reflectiveItem.getClassNames().contains(IdentityMapper.class.getName()));
-        assertTrue(reflectiveItem.getClassNames().contains(ScopeMapper.class.getName()));
-        // Token content classes are in separate group
-        assertFalse(reflectiveItem.getClassNames().contains(AccessTokenContent.class.getName()));
-    }
-
-    // REMOVED: registerBearerTokenClassesForReflection test
-    // This follows the standard: application-level classes use annotations,
-    // infrastructure/library classes use deployment processor
-
-    @Test
-    void shouldRegisterRuntimeInitializedClasses() {
-        // Act
-        RuntimeInitializedClassBuildItem runtimeItem = processor.runtimeInitializedClasses();
-
-        // Assert
-        assertNotNull(runtimeItem);
-        assertEquals(HttpJwksLoader.class.getName(), runtimeItem.getClassName());
-    }
-
-    @Test
+    @DisplayName("Should create the additional beans build item")
     void shouldCreateAdditionalBeans() {
-        // Act
         AdditionalBeanBuildItem beanItem = processor.additionalBeans();
 
-        // Assert
         assertNotNull(beanItem);
     }
 
     @Test
+    @DisplayName("Should create the DevUI card with both pages")
     void shouldCreateDevUICard() {
-        // Act
         CardPageBuildItem cardItem = processor.createJwtDevUICard();
 
-        // Assert
         assertNotNull(cardItem);
         assertFalse(cardItem.getPages().isEmpty());
         assertEquals(2, cardItem.getPages().size());
     }
 
     @Test
+    @DisplayName("Should create the DevUI JSON-RPC service")
     void shouldCreateDevUIJsonRPCService() {
-        // Act
         JsonRPCProvidersBuildItem jsonRpcItem = processor.createJwtDevUIJsonRPCService();
 
-        // Assert
         assertNotNull(jsonRpcItem);
     }
 
     @Test
+    @DisplayName("Should register unremovable beans")
     void shouldRegisterUnremovableBeans() {
-        // Arrange
         List<UnremovableBeanBuildItem> unremovableBeans = new ArrayList<>();
         BuildProducer<UnremovableBeanBuildItem> producer = unremovableBeans::add;
 
-        // Act
         processor.registerUnremovableBeans(producer);
 
-        // Assert - We produce 1 UnremovableBeanBuildItem containing 5 bean types
         assertEquals(1, unremovableBeans.size());
     }
 }

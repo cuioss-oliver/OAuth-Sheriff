@@ -17,10 +17,13 @@ For Maven dependency information, see xref:../README.adoc#_maven_coordinates[Mav
 
 === Build-Time Processing
 
-* Automatic reflection registration for JWT validation classes
+* Reflection registration for the Quarkus-specific types this extension owns or bridges
 * Native image configuration for GraalVM compatibility
-* Runtime initialization setup for HTTP-based JWKS loaders
 * Integration with Quarkus deployment pipeline
+
+NOTE: The core library's reflection metadata and the `--initialize-at-run-time` setting for
+`HttpJwksLoader` ship inside the `token-sheriff-validation` jar and are auto-detected by GraalVM.
+They are not declared by this module.
 
 === DevUI Integration
 
@@ -41,10 +44,9 @@ For Maven dependency information, see xref:../README.adoc#_maven_coordinates[Mav
 Main deployment processor handling build-time configuration:
 
 * link:src/main/java/de/cuioss/sheriff/token/quarkus/deployment/TokenSheriffProcessor.java[TokenSheriffProcessor]
-* Registers JWT validation classes for reflection
-* Configures runtime initialization for HTTP components
+* Registers the extension's own Quarkus-specific classes for reflection
+* Registers CDI beans, JAX-RS providers, and DSL-JSON service providers
 * Sets up DevUI integration in development mode
-* Provides health check integration
 
 === DevUI Components
 Development interface components:
@@ -84,27 +86,20 @@ Access DevUI components during development:
 The deployment module automatically configures build-time settings. No additional configuration is required for basic usage.
 
 === Reflection Configuration
-Automatically registers classes for reflection across 5 build steps (36 classes total). Key classes include:
+Registers only the types this extension owns or bridges:
 
-**Classes with Methods and Constructors:**
-
-* `de.cuioss.sheriff.token.validation.TokenValidator` - Main validation component
-* `de.cuioss.sheriff.token.validation.IssuerConfigCache` - Issuer configuration cache
-* `de.cuioss.sheriff.token.validation.security.SecurityEventCounter` - Security metrics
 * `io.micrometer.core.instrument.MeterRegistry` - Metrics registry
+* `org.eclipse.microprofile.jwt.JsonWebToken` and `JsonWebTokenAdapter` - MicroProfile JWT bridge for CDI injection
+* `de.cuioss.sheriff.token.quarkus.mapper.DiscoverableClaimMapper` - CDI-discoverable claim mapper interface
 
-**Configuration Classes (Methods Only):**
-
-* `de.cuioss.sheriff.token.validation.IssuerConfig` - Issuer configuration
-* `de.cuioss.sheriff.token.commons.transport.ParserConfig` - Parser settings
-* `de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig` - JWKS loader configuration
-
-**Runtime Initialization:**
-
-* `de.cuioss.sheriff.token.validation.jwks.http.HttpJwksLoader` (runtime initialized for native image compatibility)
+The core validation types — `TokenValidator`, `IssuerConfig`, `ParserConfig`,
+`HttpJwksLoaderConfig`, the validation pipeline, and the claim mappers — are registered from the
+metadata shipped in the `token-sheriff-validation` jar, not from this module.
 
 === Native Image Support
-Configures GraalVM native image compilation with automatic reflection registration and runtime initialization.
+Configures GraalVM native image compilation for the extension's own types. Core-library reflection
+metadata and the `--initialize-at-run-time` setting for `HttpJwksLoader` come from the
+`token-sheriff-validation` jar, which GraalVM auto-detects.
 
 For detailed configuration, reflection classes, and testing information, see xref:../doc/configuration/native-image-configuration.adoc[Native Image Configuration].
 

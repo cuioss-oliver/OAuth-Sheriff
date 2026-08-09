@@ -15,9 +15,6 @@
  */
 package de.cuioss.sheriff.token.quarkus.deployment;
 
-import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
-import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
-import de.cuioss.sheriff.token.commons.transport.ParserConfig;
 import de.cuioss.sheriff.token.quarkus.config.AccessLogFilterConfigResolver;
 import de.cuioss.sheriff.token.quarkus.interceptor.BearerTokenInterceptor;
 import de.cuioss.sheriff.token.quarkus.logging.CustomAccessLogFilter;
@@ -33,29 +30,7 @@ import de.cuioss.sheriff.token.quarkus.runtime.TokenSheriffDevUIRuntimeService;
 import de.cuioss.sheriff.token.quarkus.servlet.VertxServletObjectsResolver;
 import de.cuioss.sheriff.token.quarkus.validation.DiscoverableTokenValidationRule;
 import de.cuioss.sheriff.token.quarkus.validation.TokenValidationRuleRegistry;
-import de.cuioss.sheriff.token.validation.IssuerConfig;
-import de.cuioss.sheriff.token.validation.IssuerConfigCache;
 import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
-import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
-import de.cuioss.sheriff.token.validation.domain.claim.ClaimValueType;
-import de.cuioss.sheriff.token.validation.domain.claim.mapper.*;
-import de.cuioss.sheriff.token.validation.domain.token.*;
-import de.cuioss.sheriff.token.validation.jwe.JweAlgorithmPreferences;
-import de.cuioss.sheriff.token.validation.jwe.JweDecryptionConfig;
-import de.cuioss.sheriff.token.validation.jwe.JweDecryptor;
-import de.cuioss.sheriff.token.validation.jwks.http.HttpJwksLoader;
-import de.cuioss.sheriff.token.validation.jwks.key.JWKSKeyLoader;
-import de.cuioss.sheriff.token.validation.jwks.key.KeyInfo;
-import de.cuioss.sheriff.token.validation.jwks.parser.JwksParser;
-import de.cuioss.sheriff.token.validation.pipeline.DecodedJwt;
-import de.cuioss.sheriff.token.validation.pipeline.NonValidatingJwtParser;
-import de.cuioss.sheriff.token.validation.pipeline.TokenBuilder;
-import de.cuioss.sheriff.token.validation.pipeline.validator.TokenClaimValidator;
-import de.cuioss.sheriff.token.validation.pipeline.validator.TokenHeaderValidator;
-import de.cuioss.sheriff.token.validation.pipeline.validator.TokenSignatureValidator;
-import de.cuioss.sheriff.token.validation.security.JwkAlgorithmPreferences;
-import de.cuioss.sheriff.token.validation.security.SignatureAlgorithmPreferences;
 import de.cuioss.tools.logging.CuiLogger;
 import de.cuioss.tools.logging.LogRecord;
 import de.cuioss.tools.logging.LogRecordModel;
@@ -66,9 +41,7 @@ import io.quarkus.deployment.IsDevelopment;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.NativeImageResourceBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ServiceProviderBuildItem;
 import io.quarkus.devui.spi.JsonRPCProvidersBuildItem;
 import io.quarkus.devui.spi.page.CardPageBuildItem;
@@ -80,9 +53,15 @@ import org.jboss.jandex.DotName;
 /**
  * Processor for the Token-Sheriff Quarkus extension.
  * <p>
- * This class handles the build-time processing for the extension, including
- * registering the feature, setting up reflection configuration, and providing
- * DevUI integration.
+ * This class handles the build-time processing for the extension: registering the feature, the CDI
+ * and JAX-RS wiring, the Quarkus-specific reflection registrations and the DevUI integration.
+ * </p>
+ * <p>
+ * It does <em>not</em> declare the core library's reflection contract. {@code token-sheriff-validation}
+ * ships its own GraalVM metadata under
+ * {@code META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/}, which GraalVM
+ * auto-detects from the jar — for Quarkus and non-Quarkus native builds alike. Core types therefore
+ * belong in that metadata, never in this processor.
  * </p>
  */
 public class TokenSheriffProcessor {
@@ -119,130 +98,39 @@ public class TokenSheriffProcessor {
 
 
     /**
-     * Register JWT validation classes that need methods and constructors for reflection.
-     * These are core library classes instantiated directly and called via methods.
+     * Register the Quarkus-specific classes that need reflection.
+     * <p>
+     * Only types this extension owns or bridges are registered here. The core library's own
+     * reflection contract ships with {@code token-sheriff-validation} under
+     * {@code META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/} and is
+     * auto-detected by GraalVM, so it must not be duplicated in this processor.
      *
-     * @return A {@link ReflectiveClassBuildItem} for the JWT validation classes with constructors
+     * @param reflectiveClasses producer for reflective class build items
      */
     @BuildStep
-    public ReflectiveClassBuildItem registerJwtValidationConstructorClassesForReflection() {
-        return ReflectiveClassBuildItem.builder(
-                // Classes that need methods + constructors for instantiation
-                TokenValidator.class,        // Public constructors, API methods
-                IssuerConfigCache.class,  // Package constructor, internal methods
-                SecurityEventCounter.class,  // Default constructor, counter methods
-                MeterRegistry.class)         // Micrometer registry for metrics
-                .methods(true)    // Methods needed for API calls and getters
-                .fields(false)    // No direct field access needed
-                .constructors(true) // Constructors needed for instantiation
-                .build();
-    }
+    public void registerQuarkusSpecificClassesForReflection(BuildProducer<ReflectiveClassBuildItem> reflectiveClasses) {
+        // Micrometer registry for metrics
+        reflectiveClasses.produce(ReflectiveClassBuildItem.builder(MeterRegistry.class)
+                .methods(true)
+                .fields(false)
+                .constructors(true)
+                .build());
 
-    /**
-     * Register JWT configuration classes that only need methods for reflection.
-     * These classes are created via builder pattern and accessed via getters.
-     *
-     * @return A {@link ReflectiveClassBuildItem} for the JWT configuration classes
-     */
-    @BuildStep
-    public ReflectiveClassBuildItem registerJwtConfigurationClassesForReflection() {
-        return ReflectiveClassBuildItem.builder(
-                // Configuration classes created via builder pattern
-                IssuerConfig.class,         // Builder pattern, getter methods
-                ParserConfig.class,         // Builder pattern, configuration getters
-                HttpJwksLoaderConfig.class) // Builder pattern, configuration getters
-                .methods(true)    // Methods needed for getter access
-                .fields(false)    // No direct field access needed
-                .constructors(false) // Created via builder, no constructor reflection needed
-                .build();
-    }
-
-    /**
-     * Register JWT validation pipeline classes for reflection.
-     * These are the performance-critical classes in the validation pipeline.
-     *
-     * @return A {@link ReflectiveClassBuildItem} for JWT validation pipeline classes
-     */
-    @BuildStep
-    public ReflectiveClassBuildItem registerJwtPipelineClassesForReflection() {
-        return ReflectiveClassBuildItem.builder(
-                // Critical validation pipeline classes
-                NonValidatingJwtParser.class,
-                TokenSignatureValidator.class,
-                TokenHeaderValidator.class,
-                TokenClaimValidator.class,
-                TokenBuilder.class,
-                DecodedJwt.class,
-                // JWKS loading classes
-                HttpJwksLoader.class,
-                JWKSKeyLoader.class,
-                KeyInfo.class,
-                JwksParser.class,
-                // Security and algorithm classes
-                SignatureAlgorithmPreferences.class,
-                JwkAlgorithmPreferences.class,
-                // JWE decryption classes
-                JweDecryptor.class,
-                JweDecryptionConfig.class,
-                JweAlgorithmPreferences.class)
-                .methods(false)  // Methods not needed - these are instantiated and called directly
-                .fields(false)   // Fields not needed - no direct field access
-                .constructors(true) // Only constructors needed for instantiation
-                .build();
-    }
-
-    /**
-     * Register JWT token content classes for reflection.
-     * These classes need full reflection for getter/setter access and field binding.
-     *
-     * @return A {@link ReflectiveClassBuildItem} for JWT token content classes
-     */
-    @BuildStep
-    public ReflectiveClassBuildItem registerJwtTokenContentClassesForReflection() {
-        return ReflectiveClassBuildItem.builder(
-                // Token content classes - need full reflection for getter/setter access
-                AccessTokenContent.class,
-                IdTokenContent.class,
-                UnvalidatedRefreshToken.class,
-                TokenContent.class,
-                BaseTokenContent.class,
-                MinimalTokenContent.class,
-                // MicroProfile JWT interface and adapter for CDI injection
+        // MicroProfile JWT interface and adapter for CDI injection
+        reflectiveClasses.produce(ReflectiveClassBuildItem.builder(
                 JsonWebToken.class,
-                JsonWebTokenAdapter.class,
-                // Claim handling classes - need full reflection for enum handling
-                ClaimValue.class,
-                ClaimName.class,
-                ClaimValueType.class)
-                .methods(true)  // Methods needed for getters/setters on token content
-                .fields(true)   // Fields needed for direct field access in token content
-                .constructors(true) // Constructors needed for instantiation
-                .build();
-    }
+                JsonWebTokenAdapter.class)
+                .methods(true)
+                .fields(true)
+                .constructors(true)
+                .build());
 
-    /**
-     * Register JWT claim mapper classes for reflection.
-     * These classes only need constructors for instantiation - no method/field access.
-     *
-     * @return A {@link ReflectiveClassBuildItem} for JWT claim mapper classes
-     */
-    @BuildStep
-    public ReflectiveClassBuildItem registerJwtClaimMapperClassesForReflection() {
-        return ReflectiveClassBuildItem.builder(
-                // Claim mappers - only need constructors for instantiation
-                IdentityMapper.class,
-                JsonCollectionMapper.class,
-                KeycloakDefaultGroupsMapper.class,
-                KeycloakDefaultRolesMapper.class,
-                OffsetDateTimeMapper.class,
-                ScopeMapper.class,
-                StringSplitterMapper.class,
-                // CDI-discoverable claim mapper interface
-                DiscoverableClaimMapper.class)
-                .methods(false)  // Methods not needed - mappers are called via interface
-                .fields(false)   // Fields not needed - no field access
-                .constructors(true) // Only constructors needed for instantiation
-                .build();
+        // CDI-discoverable claim mapper interface
+        reflectiveClasses.produce(ReflectiveClassBuildItem.builder(DiscoverableClaimMapper.class)
+                .methods(false)
+                .fields(false)
+                .constructors(true)
+                .build());
     }
 
     /**
@@ -253,35 +141,6 @@ public class TokenSheriffProcessor {
     public void registerDslJsonServiceProviders(BuildProducer<ServiceProviderBuildItem> serviceProvider) {
         // Register all DSL-JSON configurations from classpath
         serviceProvider.produce(ServiceProviderBuildItem.allProvidersFromClassPath("com.dslplatform.json.Configuration"));
-
-        // Explicitly register our generated converters as service providers
-        serviceProvider.produce(new ServiceProviderBuildItem("com.dslplatform.json.Configuration",
-                "de.cuioss.sheriff.token.commons.transport._WellKnownResult_DslJsonConverter",
-                "de.cuioss.sheriff.token.commons.transport._Jwks_DslJsonConverter",
-                "de.cuioss.sheriff.token.commons.transport._JwkKey_DslJsonConverter",
-                "de.cuioss.sheriff.token.validation.json._JwtHeader_DslJsonConverter"));
-    }
-
-
-    /**
-     * Register classes that need to be initialized at runtime.
-     *
-     * @return A {@link RuntimeInitializedClassBuildItem} for classes that need runtime initialization
-     */
-    @BuildStep
-    public RuntimeInitializedClassBuildItem runtimeInitializedClasses() {
-        return new RuntimeInitializedClassBuildItem(HttpJwksLoader.class.getName());
-    }
-
-    /**
-     * Register native image resources that JWT validation needs access to.
-     * This ensures configuration files and other resources are included in the native image.
-     */
-    @BuildStep
-    public void registerJwtValidationResources(BuildProducer<NativeImageResourceBuildItem> resourceProducer) {
-        // Include any JWT validation configuration files that might exist
-        resourceProducer.produce(new NativeImageResourceBuildItem("META-INF/services/de.cuioss.sheriff.token.validation.jwks.JwksLoader"));
-        resourceProducer.produce(new NativeImageResourceBuildItem("META-INF/services/de.cuioss.sheriff.token.validation.domain.claim.mapper.ClaimMapper"));
     }
 
 
