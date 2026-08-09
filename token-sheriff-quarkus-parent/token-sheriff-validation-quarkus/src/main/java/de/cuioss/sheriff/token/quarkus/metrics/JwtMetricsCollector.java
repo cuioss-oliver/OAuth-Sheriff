@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.INFO;
 import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.WARN;
+import static io.quarkus.scheduler.Scheduled.ConcurrentExecution.SKIP;
 
 /**
  * Collects JWT validation metrics from {@link SecurityEventCounter} and exposes them as Micrometer metrics.
@@ -174,8 +175,14 @@ public class JwtMetricsCollector {
      * <p>
      * The interval can be configured via the property: sheriff.token.metrics.collection.interval
      * Default: 10s (production), can be set to 2s for faster integration testing.
+     * <p>
+     * Overlapping executions are skipped: the delta bookkeeping reads and writes
+     * {@code lastKnownCounts} and {@code baselinedValidator} without synchronization, so a
+     * concurrent second run could export duplicate or lost deltas.
      */
-    @Scheduled(every = "${" + JwtPropertyKeys.METRICS_COLLECTION_INTERVAL + ":10s}")
+    @Scheduled(
+            every = "${" + JwtPropertyKeys.METRICS_COLLECTION_INTERVAL + ":10s}",
+            concurrentExecution = SKIP)
     public void updateCounters() {
         updateSecurityEventCounters();
     }
@@ -201,15 +208,7 @@ public class JwtMetricsCollector {
         // Get current counts for all event types
         Map<SecurityEventCounter.EventType, Long> currentCounts = securityEventCounter.getCounters();
 
-        // Debug: Log current state for success events
-        for (SecurityEventCounter.EventType eventType : SecurityEventCounter.EventType.values()) {
-            if (eventType.getCategory() == null) {
-                long count = securityEventCounter.getCount(eventType);
-                if (count > 0) {
-                    LOGGER.debug("Success event %s has count %s", eventType.name(), count);
-                }
-            }
-        }
+        logSuccessEventCounts(securityEventCounter);
 
         // Update counters based on current counts. Iterate the union of current and
         // baseline keys: after an external reset, event types disappear from the
@@ -218,35 +217,61 @@ public class JwtMetricsCollector {
         eventTypes.addAll(lastKnownCounts.keySet());
 
         for (SecurityEventCounter.EventType eventType : eventTypes) {
-            long currentCount = currentCounts.getOrDefault(eventType, 0L);
+            applyDelta(eventType, currentCounts.getOrDefault(eventType, 0L));
+        }
+    }
 
-            // Get the last known count for this event type
-            long lastCount = lastKnownCounts.getOrDefault(eventType, 0L);
-
-            // Calculate the delta
-            long delta = currentCount - lastCount;
-
-            // Only update if there's a change
-            if (delta > 0) {
-                // Get the counter for this event type
-                Counter counter = counters.get(eventType.name());
-                if (counter != null) {
-                    // Increment the counter by the delta
-                    counter.increment(delta);
-                    LOGGER.debug("Updated counter for event type %s by %s (total: %s)", eventType.name(), delta, counter.count());
-                } else {
-                    LOGGER.warn(WARN.NO_MICROMETER_COUNTER_FOUND, eventType.name(), delta);
+    /**
+     * Logs the current count of every success-classified event type that has been recorded at least
+     * once.
+     *
+     * @param securityEventCounter the counter the observed validator exposes
+     */
+    private void logSuccessEventCounts(SecurityEventCounter securityEventCounter) {
+        for (SecurityEventCounter.EventType eventType : SecurityEventCounter.EventType.values()) {
+            if (eventType.getCategory() == null) {
+                long count = securityEventCounter.getCount(eventType);
+                if (count > 0) {
+                    LOGGER.debug("Success event %s has count %s", eventType.name(), count);
                 }
-
-                // Update the last known count
-                lastKnownCounts.put(eventType, currentCount);
-            } else if (delta < 0) {
-                // The underlying counter was reset externally — re-baseline to the current
-                // count so subsequent events are exported correctly instead of being ignored
-                LOGGER.debug("Detected external reset for event type %s (delta %s), re-baselining to %s",
-                        eventType.name(), delta, currentCount);
-                lastKnownCounts.put(eventType, currentCount);
             }
+        }
+    }
+
+    /**
+     * Exports the delta between the current and the baselined count for a single event type and
+     * updates the baseline.
+     *
+     * @param eventType    the event type to export
+     * @param currentCount the count the observed validator currently reports for that event type
+     */
+    private void applyDelta(SecurityEventCounter.EventType eventType, long currentCount) {
+        // Get the last known count for this event type
+        long lastCount = lastKnownCounts.getOrDefault(eventType, 0L);
+
+        // Calculate the delta
+        long delta = currentCount - lastCount;
+
+        // Only update if there's a change
+        if (delta > 0) {
+            // Get the counter for this event type
+            Counter counter = counters.get(eventType.name());
+            if (counter != null) {
+                // Increment the counter by the delta
+                counter.increment(delta);
+                LOGGER.debug("Updated counter for event type %s by %s (total: %s)", eventType.name(), delta, counter.count());
+            } else {
+                LOGGER.warn(WARN.NO_MICROMETER_COUNTER_FOUND, eventType.name(), delta);
+            }
+
+            // Update the last known count
+            lastKnownCounts.put(eventType, currentCount);
+        } else if (delta < 0) {
+            // The underlying counter was reset externally — re-baseline to the current
+            // count so subsequent events are exported correctly instead of being ignored
+            LOGGER.debug("Detected external reset for event type %s (delta %s), re-baselining to %s",
+                    eventType.name(), delta, currentCount);
+            lastKnownCounts.put(eventType, currentCount);
         }
     }
 

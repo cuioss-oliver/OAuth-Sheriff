@@ -31,6 +31,7 @@ import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.INFO;
 import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.WARN;
@@ -112,13 +113,14 @@ public class ObservedValidatorResolver {
     Instance<ParserConfig> parserConfig) {
     }
 
-    private final @Nullable CdiHandles cdi;
-
-    private volatile Resolution resolution;
-    private volatile @Nullable Outcome lastLoggedOutcome;
-
     private static final Resolution UNRESOLVED =
             new Resolution(Outcome.NOT_CONFIGURED, null, List.of(), null);
+
+    private final @Nullable CdiHandles cdi;
+
+    private final AtomicReference<Resolution> resolution = new AtomicReference<>(UNRESOLVED);
+    private volatile @Nullable Outcome lastLoggedOutcome;
+    private final AtomicReference<List<String>> lastWarnedCandidates = new AtomicReference<>(List.of());
 
     /**
      * CDI constructor. Every producer-sourced dependency is a lazy {@link Instance} handle, so
@@ -133,7 +135,6 @@ public class ObservedValidatorResolver {
     public ObservedValidatorResolver(Config config, @Any Instance<TokenValidator> tokenValidators,
             Instance<List<IssuerConfig>> issuerConfigsHandle, Instance<ParserConfig> parserConfigHandle) {
         this.cdi = new CdiHandles(config, tokenValidators, issuerConfigsHandle, parserConfigHandle);
-        this.resolution = UNRESOLVED;
     }
 
     /**
@@ -148,7 +149,7 @@ public class ObservedValidatorResolver {
     public ObservedValidatorResolver(Outcome outcome, @Nullable TokenValidator validator,
             List<IssuerConfig> issuerConfigs, @Nullable ParserConfig parserConfig) {
         this.cdi = null;
-        this.resolution = new Resolution(outcome, validator, List.copyOf(issuerConfigs), parserConfig);
+        this.resolution.set(new Resolution(outcome, validator, List.copyOf(issuerConfigs), parserConfig));
     }
 
     /**
@@ -184,14 +185,14 @@ public class ObservedValidatorResolver {
     private Resolution resolve() {
         CdiHandles handles = cdi;
         if (handles == null) {
-            return resolution;
+            return resolution.get();
         }
-        Resolution current = resolution;
+        Resolution current = resolution.get();
         if (current.outcome() != Outcome.NOT_CONFIGURED) {
             return current;
         }
         Resolution resolved = doResolve(handles);
-        resolution = resolved;
+        resolution.set(resolved);
         return resolved;
     }
 
@@ -224,12 +225,19 @@ public class ObservedValidatorResolver {
 
     /**
      * Emits the resolution transition once per distinct outcome rather than on every probe.
+     * <p>
+     * The ambiguity warning is gated separately, on the candidate set rather than on the outcome
+     * transition: {@link Outcome#NOT_CONFIGURED} is re-resolved on every call, so an outcome-gated
+     * warning would stay silent for an ambiguity that only appears after an earlier zero-candidate
+     * probe already logged {@code NOT_CONFIGURED}.
+     * </p>
      */
     private Resolution logged(Resolution resolved, List<String> ambiguousCandidates) {
+        if (ambiguousCandidates.size() > 1 && !ambiguousCandidates.equals(lastWarnedCandidates.get())) {
+            LOGGER.warn(WARN.AMBIGUOUS_EXTERNAL_VALIDATORS, String.join(", ", ambiguousCandidates));
+            lastWarnedCandidates.set(ambiguousCandidates);
+        }
         if (resolved.outcome() != lastLoggedOutcome) {
-            if (ambiguousCandidates.size() > 1) {
-                LOGGER.warn(WARN.AMBIGUOUS_EXTERNAL_VALIDATORS, String.join(", ", ambiguousCandidates));
-            }
             LOGGER.info(INFO.OBSERVED_VALIDATOR_RESOLUTION, resolved.outcome());
             lastLoggedOutcome = resolved.outcome();
         }

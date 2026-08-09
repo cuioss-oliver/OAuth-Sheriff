@@ -50,6 +50,7 @@ public class TokenSheriffDevUIRuntimeService {
     private static final String ISSUER = "issuer";
     private static final String HEALTH_STATUS = "healthStatus";
     private static final String STATUS = "status";
+    private static final String DETAILS = "details";
     private static final String NOT_CONFIGURED = "NOT_CONFIGURED";
     private static final String UNAVAILABLE_EXTERNAL_VALIDATOR = "unavailable (external validator)";
     private static final String UNAVAILABLE_NOT_CONFIGURED = "unavailable (not configured)";
@@ -198,7 +199,7 @@ public class TokenSheriffDevUIRuntimeService {
         TokenValidator tokenValidator = resolver.observedValidator().orElse(null);
         if (tokenValidator == null) {
             result.put(ERROR, "No validator configured");
-            result.put("details", "No TokenValidator is configured");
+            result.put(DETAILS, "No TokenValidator is configured");
             return result;
         }
 
@@ -224,11 +225,11 @@ public class TokenSheriffDevUIRuntimeService {
         } catch (TokenValidationException e) {
             // Token remains invalid (default state)
             result.put(ERROR, e.getMessage());
-            result.put("details", "Access token validation failed");
+            result.put(DETAILS, "Access token validation failed");
         } catch (JsonException | IllegalArgumentException e) {
             // Handle JSON parsing errors and other token format issues
             result.put(ERROR, "Invalid token format: " + e.getMessage());
-            result.put("details", "Token format is invalid");
+            result.put(DETAILS, "Token format is invalid");
         }
 
         return result;

@@ -141,6 +141,29 @@ class ObservedValidatorResolverTest {
         }
 
         @Test
+        @DisplayName("should warn about an ambiguity that only appears after an earlier zero-candidate probe")
+        void shouldWarnOnAmbiguityAfterEarlierNotConfiguredProbe() {
+            List<Instance.Handle<TokenValidator>> handles = new ArrayList<>();
+            handles.add(new RecordingHandle(TokenValidatorProducer.class, createNiceMock(TokenValidator.class)));
+            ObservedValidatorResolver resolver = new ObservedValidatorResolver(
+                    new TestConfig(Map.of()),
+                    validatorInstance(handles),
+                    valueInstance(new ArrayList<>()),
+                    valueInstance(ParserConfig.builder().build()));
+
+            assertEquals(ObservedValidatorResolver.Outcome.NOT_CONFIGURED, resolver.outcome(),
+                    "Nothing is observable on the first probe");
+            handles.add(new RecordingHandle(ForeignValidatorAlpha.class, createNiceMock(TokenValidator.class)));
+            handles.add(new RecordingHandle(ForeignValidatorBeta.class, createNiceMock(TokenValidator.class)));
+
+            assertEquals(ObservedValidatorResolver.Outcome.NOT_CONFIGURED, resolver.outcome(),
+                    "Ambiguous foreign validators must still resolve to NOT_CONFIGURED");
+            // The outcome never transitioned, so an outcome-gated warning would stay silent here
+            assertLogMessagePresentContaining(TestLogLevel.WARN, ForeignValidatorAlpha.class.getName());
+            assertLogMessagePresentContaining(TestLogLevel.WARN, ForeignValidatorBeta.class.getName());
+        }
+
+        @Test
         @DisplayName("should report NOT_CONFIGURED when no validator exists at all")
         void shouldReportNotConfiguredWithoutAnyValidator() {
             RecordingHandle producerHandle = new RecordingHandle(TokenValidatorProducer.class,
