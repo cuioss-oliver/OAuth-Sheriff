@@ -92,16 +92,24 @@ public class ObservedValidatorResolver {
         NOT_CONFIGURED
     }
 
-    private record Resolution(Outcome outcome, @Nullable TokenValidator validator,
-            List<IssuerConfig> issuerConfigs, @Nullable ParserConfig parserConfig) {
+    private record Resolution(
+    Outcome outcome,
+    @Nullable
+    TokenValidator validator,
+    List<IssuerConfig> issuerConfigs,
+    @Nullable
+    ParserConfig parserConfig) {
     }
 
     /**
      * The lazily-consulted CDI dependencies. {@code null} when this resolver was constructed with an
      * already-resolved outcome, in which case no resolution ever runs.
      */
-    private record CdiHandles(Config config, Instance<TokenValidator> tokenValidators,
-            Instance<List<IssuerConfig>> issuerConfigs, Instance<ParserConfig> parserConfig) {
+    private record CdiHandles(
+    Config config,
+    Instance<TokenValidator> tokenValidators,
+    Instance<List<IssuerConfig>> issuerConfigs,
+    Instance<ParserConfig> parserConfig) {
     }
 
     private final @Nullable CdiHandles cdi;
