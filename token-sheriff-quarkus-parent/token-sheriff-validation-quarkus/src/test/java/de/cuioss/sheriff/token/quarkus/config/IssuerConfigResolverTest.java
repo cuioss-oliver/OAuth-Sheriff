@@ -224,7 +224,7 @@ class IssuerConfigResolverTest {
 
             // resolveIssuerConfigs would reject the cleartext http JWKS URL; the probe must not care
             assertTrue(assertDoesNotThrow(() -> IssuerConfigResolver.hasEnabledIssuers(config),
-                            "The probe must not run builder validation"),
+                    "The probe must not run builder validation"),
                     "The enabled issuer must still be detected");
         }
     }
