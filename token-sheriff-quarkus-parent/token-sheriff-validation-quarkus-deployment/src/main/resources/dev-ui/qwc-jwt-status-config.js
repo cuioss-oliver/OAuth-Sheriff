@@ -476,7 +476,11 @@ export class QwcJwtStatusConfig extends LitElement {
                   })}
                 </div>
               `
-            : html`<div class="no-issuers">No issuers configured. JWT validation will not be available.</div>`
+            : jwks.status === 'EXTERNAL_VALIDATOR'
+              ? html`<div class="no-issuers">
+                  No issuer configuration is exposed — an external validator is active and handling JWT validation.
+                </div>`
+              : html`<div class="no-issuers">No issuers configured. JWT validation will not be available.</div>`
         }
       </div>
     `;

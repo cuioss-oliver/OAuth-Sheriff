@@ -29,6 +29,13 @@ const flattenTemplate = value => {
   return String(value);
 };
 
+/** The Issuers-section message the real component renders when an external validator is active. */
+const EXTERNAL_VALIDATOR_ISSUERS_MESSAGE =
+  'No issuer configuration is exposed — an external validator is active and handling JWT validation.';
+
+/** The Issuers-section message the real component renders when nothing is configured. */
+const NO_ISSUERS_MESSAGE = 'No issuers configured. JWT validation will not be available.';
+
 // Simplified component class for testing (mirrors the real component's logic)
 class QwcJwtStatusConfig extends LitElement {
   static properties = {
@@ -143,6 +150,37 @@ class QwcJwtStatusConfig extends LitElement {
       config.parser ? this._renderParserConfiguration() : '',
       config.httpJwksLoader ? this._renderHttpConfiguration() : '',
     ];
+  }
+
+  /**
+   * Mirrors the real component's Issuers section. The empty-issuers message is branched on the
+   * backend's resolution outcome: `EXTERNAL_VALIDATOR` means JWT validation IS active through an
+   * externally-produced validator that merely exposes no issuer configuration, so the generic
+   * "will not be available" wording would contradict the reported state.
+   *
+   * @returns {unknown} the Issuers section template
+   */
+  _renderIssuers() {
+    const jwks = this._jwksStatus;
+    return html`
+      <div class="section" data-testid="status-config-issuers-section">
+        <h4 class="section-title">Issuers</h4>
+        ${
+          jwks?.issuers && jwks.issuers.length > 0
+            ? html`<div class="issuers-grid">
+                ${jwks.issuers.map(
+                  issuer =>
+                    html`<div class="issuer-card" data-testid="status-config-issuer-card">
+                      ${issuer.name}
+                    </div>`
+                )}
+              </div>`
+            : jwks?.status === 'EXTERNAL_VALIDATOR'
+              ? html`<div class="no-issuers">${EXTERNAL_VALIDATOR_ISSUERS_MESSAGE}</div>`
+              : html`<div class="no-issuers">${NO_ISSUERS_MESSAGE}</div>`
+        }
+      </div>
+    `;
   }
 
   _renderParserConfiguration() {
@@ -314,7 +352,7 @@ class QwcJwtStatusConfig extends LitElement {
               }
             </div>
           </div>
-          ${this._renderConfigSections()}
+          ${this._renderIssuers()} ${this._renderConfigSections()}
         </div>
       </div>
     `;
@@ -792,6 +830,11 @@ describe('QwcJwtStatusConfig', () => {
     it('should never render the literal undefined', () => {
       expect(component._lastRenderedHtml).not.toContain('undefined');
     });
+
+    it('should state that an external validator is handling validation instead of claiming it is unavailable', () => {
+      expect(component._lastRenderedHtml).toContain(EXTERNAL_VALIDATOR_ISSUERS_MESSAGE);
+      expect(component._lastRenderedHtml).not.toContain(NO_ISSUERS_MESSAGE);
+    });
   });
 
   describe('Parser Configuration — NOT_CONFIGURED', () => {
@@ -816,6 +859,11 @@ describe('QwcJwtStatusConfig', () => {
 
     it('should never render the literal undefined', () => {
       expect(component._lastRenderedHtml).not.toContain('undefined');
+    });
+
+    it('should keep the generic unavailable message when nothing is configured', () => {
+      expect(component._lastRenderedHtml).toContain(NO_ISSUERS_MESSAGE);
+      expect(component._lastRenderedHtml).not.toContain(EXTERNAL_VALIDATOR_ISSUERS_MESSAGE);
     });
   });
 

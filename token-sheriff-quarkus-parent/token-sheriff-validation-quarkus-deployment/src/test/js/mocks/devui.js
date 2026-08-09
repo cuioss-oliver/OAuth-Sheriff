@@ -257,6 +257,19 @@ export const mockScenarios = {
       statusMessage: 'JWT validation is active and ready',
     });
 
+    devui.jsonRPC.CuiJwtDevUI.getJwksStatus.mockResolvedValue({
+      status: 'CONFIGURED',
+      issuers: [
+        {
+          name: 'default',
+          issuerUri: 'https://keycloak.example.com/auth/realms/master',
+          jwksUri: 'configured',
+          loaderStatus: 'OK',
+          lastRefresh: 'N/A',
+        },
+      ],
+    });
+
     devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
       enabled: true,
       logLevel: 'INFO',
@@ -299,6 +312,12 @@ export const mockScenarios = {
       issuers: [],
     });
 
+    devui.jsonRPC.CuiJwtDevUI.getHealthInfo.mockResolvedValue({
+      configurationValid: true,
+      message: 'All JWT components are healthy and operational (EXTERNAL_VALIDATOR)',
+      healthStatus: 'UP',
+    });
+
     devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
       enabled: true,
       logLevel: 'INFO',
@@ -324,6 +343,12 @@ export const mockScenarios = {
     devui.jsonRPC.CuiJwtDevUI.getJwksStatus.mockResolvedValue({
       status: 'NOT_CONFIGURED',
       issuers: [],
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getHealthInfo.mockResolvedValue({
+      configurationValid: false,
+      message: 'No TokenValidator is configured (NOT_CONFIGURED)',
+      healthStatus: 'DOWN',
     });
 
     devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
