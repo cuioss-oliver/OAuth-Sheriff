@@ -19,7 +19,9 @@ import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.transport.JwksType;
 import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.quarkus.config.JwtTestProfile;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
 import de.cuioss.sheriff.token.validation.jwks.key.KeyInfo;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -39,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
+import static org.easymock.EasyMock.createNiceMock;
 import static org.junit.jupiter.api.Assertions.*;
 
 @QuarkusTest
@@ -187,7 +190,7 @@ class JwksEndpointHealthCheckTest {
 
         // Create a health check with the error issuer config
         JwksEndpointHealthCheck errorHealthCheck = new JwksEndpointHealthCheck(
-                List.of(errorIssuerConfig), 30);
+                observing(errorIssuerConfig), 30);
 
         // Call the health check
         HealthCheckResponse response = errorHealthCheck.call();
@@ -240,7 +243,7 @@ class JwksEndpointHealthCheckTest {
 
         // Create a health check with both issuer configs
         JwksEndpointHealthCheck mixedHealthCheck = new JwksEndpointHealthCheck(
-                List.of(healthyIssuerConfig, unhealthyIssuerConfig), 30);
+                observing(healthyIssuerConfig, unhealthyIssuerConfig), 30);
 
         // Call the health check
         HealthCheckResponse response = mixedHealthCheck.call();
@@ -293,7 +296,7 @@ class JwksEndpointHealthCheckTest {
     void healthCheckCacheExpiration() {
         // Create a health check with a very short cache timeout (1 millisecond)
         JwksEndpointHealthCheck shortCacheHealthCheck = new JwksEndpointHealthCheck(
-                List.of(IssuerConfig.builder()
+                observing(IssuerConfig.builder()
                         .issuerIdentifier("cache-test-issuer")
                         .jwksLoader(new HealthyJwksLoader())
                         .audienceValidationDisabled(true)
@@ -360,7 +363,7 @@ class JwksEndpointHealthCheckTest {
 
         // Create health check with fail-fast loader
         JwksEndpointHealthCheck failFastHealthCheck = new JwksEndpointHealthCheck(
-                List.of(failFastIssuerConfig), 30);
+                observing(failFastIssuerConfig), 30);
 
         // Measure execution time to ensure it's fail-fast
         long startTime = System.currentTimeMillis();
@@ -391,6 +394,56 @@ class JwksEndpointHealthCheckTest {
         // Overall status should be DOWN due to UNDEFINED loader status
         assertEquals(HealthCheckResponse.Status.DOWN, response.getStatus(),
                 "Health check status should be DOWN with UNDEFINED loader status");
+    }
+
+    @Test
+    @DisplayName("Health check should report UP with zero endpoints when an external validator is observed")
+    void healthCheckExternalValidator() {
+        JwksEndpointHealthCheck externalHealthCheck = new JwksEndpointHealthCheck(
+                new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.EXTERNAL_VALIDATOR,
+                        createNiceMock(TokenValidator.class), List.of(), null),
+                30);
+
+        HealthCheckResponse response = externalHealthCheck.call();
+
+        Map<String, Object> data = response.getData().orElseThrow();
+        assertAll("external validator readiness",
+                () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                        "Readiness must stay UP when an external validator is in use"),
+                () -> assertEquals(0, ((Number) data.get("checkedEndpoints")).intValue(),
+                        "A foreign validator exposes no JWKS endpoints to probe"),
+                () -> assertEquals("EXTERNAL_VALIDATOR", data.get("readiness"),
+                        "readiness must name the external-validator outcome"),
+                () -> assertFalse(data.containsKey("issuer.0.url"),
+                        "No per-issuer data may be emitted without observable issuers"));
+    }
+
+    @Test
+    @DisplayName("Health check should report UP with zero endpoints when nothing is configured")
+    void healthCheckNotConfigured() {
+        JwksEndpointHealthCheck unconfiguredHealthCheck = new JwksEndpointHealthCheck(
+                new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.NOT_CONFIGURED,
+                        null, List.of(), null),
+                30);
+
+        HealthCheckResponse response = unconfiguredHealthCheck.call();
+
+        Map<String, Object> data = response.getData().orElseThrow();
+        assertAll("unconfigured readiness",
+                () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                        "An unconfigured optional extension must not hold the application out of the load balancer"),
+                () -> assertEquals(0, ((Number) data.get("checkedEndpoints")).intValue(),
+                        "Nothing is observable, so nothing is probed"),
+                () -> assertEquals("NOT_CONFIGURED", data.get("readiness"),
+                        "readiness must name the not-configured outcome"));
+    }
+
+    /**
+     * Pins a resolver to the property-configured outcome over the supplied issuer configurations.
+     */
+    private static ObservedValidatorResolver observing(IssuerConfig... issuerConfigs) {
+        return new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.PROPERTY_CONFIGURED,
+                createNiceMock(TokenValidator.class), List.of(issuerConfigs), null);
     }
 
     // Mock JwksLoader implementations for testing

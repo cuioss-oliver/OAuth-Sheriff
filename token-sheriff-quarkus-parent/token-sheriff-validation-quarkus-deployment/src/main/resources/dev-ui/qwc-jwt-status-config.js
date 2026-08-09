@@ -482,8 +482,39 @@ export class QwcJwtStatusConfig extends LitElement {
     `;
   }
 
+  /**
+   * Reads the section-level unavailability marker the backend emits when no parser configuration is
+   * observable, and maps it to the notice rendered in place of the parser-derived values.
+   *
+   * Both parser-derived surfaces — the Parser Configuration grid and the HTTP JWKS Loader's size
+   * limit — consume this single predicate, so the symmetric peers cannot drift apart.
+   *
+   * @returns {string|null} the notice text, or `null` when the parser values are available
+   */
+  _parserUnavailableNotice() {
+    const marker = this._configuration?.parser?.status;
+    if (!marker) {
+      return null;
+    }
+    return marker.includes('external validator') ? 'Not available — an external validator is in use' : 'Not configured';
+  }
+
   _renderParserConfiguration() {
     const config = this._configuration;
+    const notice = this._parserUnavailableNotice();
+    if (notice) {
+      return html`
+        <div class="section" data-testid="status-config-parser-section">
+          <h4 class="section-title">Parser Configuration</h4>
+          <div class="config-grid">
+            <div class="config-item">
+              <div class="config-label">Parser Limits</div>
+              <div class="config-value null" data-testid="status-config-parser-unavailable">${notice}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
     return html`
       <div class="section" data-testid="status-config-parser-section">
         <h4 class="section-title">Parser Configuration</h4>
@@ -521,6 +552,7 @@ export class QwcJwtStatusConfig extends LitElement {
 
   _renderHttpConfiguration() {
     const config = this._configuration;
+    const notice = this._parserUnavailableNotice();
     return html`
       <div class="section" data-testid="status-config-http-section">
         <h4 class="section-title">HTTP JWKS Loader</h4>
@@ -535,7 +567,9 @@ export class QwcJwtStatusConfig extends LitElement {
           </div>
           <div class="config-item">
             <div class="config-label">Size Limit</div>
-            <div class="config-value">${config.httpJwksLoader.sizeLimit} bytes</div>
+            <div class="config-value ${notice ? 'null' : ''}" data-testid="status-config-http-size-limit">
+              ${notice ? notice : html`${config.httpJwksLoader.sizeLimit} bytes`}
+            </div>
           </div>
           <div class="config-item">
             <div class="config-label">Cache TTL</div>

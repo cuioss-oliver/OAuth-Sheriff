@@ -18,6 +18,7 @@ package de.cuioss.sheriff.token.quarkus.runtime;
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
 import de.cuioss.sheriff.token.quarkus.config.JwtPropertyKeys;
 import de.cuioss.sheriff.token.quarkus.config.JwtTestProfile;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.quarkus.test.TestConfig;
 import de.cuioss.sheriff.token.quarkus.test.TestConfigurations;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
@@ -63,6 +64,16 @@ class TokenSheriffDevUIRuntimeServiceTest {
 
     @Inject
     List<IssuerConfig> issuerConfigs;
+
+    /**
+     * Pins a resolver to the property-configured outcome over the supplied dependencies, mirroring
+     * what the CDI-wired resolver reports when the issuer namespace is populated.
+     */
+    private static ObservedValidatorResolver propertyConfigured(TokenValidator validator,
+            List<IssuerConfig> issuerConfigs) {
+        return new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.PROPERTY_CONFIGURED,
+                validator, issuerConfigs, ParserConfig.builder().build());
+    }
 
 
     @Nested
@@ -251,7 +262,7 @@ class TokenSheriffDevUIRuntimeServiceTest {
         @DisplayName("Should attempt access token validation when JWT is enabled")
         void shouldAttemptAccessTokenValidationWhenJwtIsEnabled() {
             // Create a service with enabled JWT configuration to test the validation logic
-            TokenSheriffDevUIRuntimeService enabledService = new TokenSheriffDevUIRuntimeService(tokenValidator, issuerConfigs, ParserConfig.builder().build());
+            TokenSheriffDevUIRuntimeService enabledService = new TokenSheriffDevUIRuntimeService(propertyConfigured(tokenValidator, issuerConfigs));
 
             // Test with an invalid access token to see the validation attempt behavior
             // This tests that validation is attempted (not just disabled)
@@ -334,7 +345,7 @@ class TokenSheriffDevUIRuntimeServiceTest {
         @DisplayName("Should handle service with enabled issuer configuration")
         void shouldHandleServiceWithEnabledIssuerConfiguration() {
             // Create a service with enabled issuer configuration
-            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(tokenValidator, issuerConfigs, ParserConfig.builder().build());
+            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(propertyConfigured(tokenValidator, issuerConfigs));
 
             Map<String, Object> validationStatus = testService.getValidationStatus();
             Map<String, Object> configuration = testService.getConfiguration();
@@ -355,7 +366,7 @@ class TokenSheriffDevUIRuntimeServiceTest {
             List<IssuerConfig> issuerConfigsList = new ArrayList<>(issuerConfigs);
             // Duplicate, but we only test the size here
             issuerConfigsList.addAll(issuerConfigs);
-            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(tokenValidator, issuerConfigsList, ParserConfig.builder().build());
+            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(propertyConfigured(tokenValidator, issuerConfigsList));
 
             Map<String, Object> jwksStatus = testService.getJwksStatus();
 
@@ -367,9 +378,8 @@ class TokenSheriffDevUIRuntimeServiceTest {
         @Test
         @DisplayName("Should report healthy state for enabled configuration")
         void shouldDetermineHealthBasedOnDifferentConfigurations() {
-            // With a produced (guaranteed non-empty) issuer list, health is always UP —
-            // startup fails before this service exists when no enabled issuer is configured
-            TokenSheriffDevUIRuntimeService enabledService = new TokenSheriffDevUIRuntimeService(tokenValidator, issuerConfigs, ParserConfig.builder().build());
+            // A property-configured resolution keeps the configurationValid => UP contract
+            TokenSheriffDevUIRuntimeService enabledService = new TokenSheriffDevUIRuntimeService(propertyConfigured(tokenValidator, issuerConfigs));
 
             Map<String, Object> enabledHealth = enabledService.getHealthInfo();
             Boolean configurationValid = (Boolean) enabledHealth.get("configurationValid");
@@ -383,18 +393,23 @@ class TokenSheriffDevUIRuntimeServiceTest {
     class ConstructorTests {
 
         @Test
-        @DisplayName("Should create service with minimal dependencies")
-        void shouldCreateServiceWithMinimalDependencies() {
-            // The constructor performs no validation — it only stores its dependencies
-            assertDoesNotThrow(() -> new TokenSheriffDevUIRuntimeService(null, issuerConfigs, ParserConfig.builder().build()),
-                    "Constructor should not throw exception with null tokenValidator");
+        @DisplayName("Should create service over a resolver reporting NOT_CONFIGURED")
+        void shouldCreateServiceWithUnconfiguredResolver() {
+            // The constructor performs no validation — it only stores its dependency
+            TokenSheriffDevUIRuntimeService unconfiguredService = assertDoesNotThrow(
+                    () -> new TokenSheriffDevUIRuntimeService(new ObservedValidatorResolver(
+                            ObservedValidatorResolver.Outcome.NOT_CONFIGURED, null, List.of(), null)),
+                    "Constructor should not throw when nothing is observable");
+
+            assertEquals("NOT_CONFIGURED", unconfiguredService.getValidationStatus().get("status"),
+                    "An unconfigured resolver must surface as NOT_CONFIGURED rather than throwing");
         }
 
         @Test
         @DisplayName("Should create service with valid dependencies")
         void shouldCreateServiceWithValidDependencies() {
             // Test constructor with actual dependencies
-            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(tokenValidator, issuerConfigs, ParserConfig.builder().build());
+            TokenSheriffDevUIRuntimeService testService = new TokenSheriffDevUIRuntimeService(propertyConfigured(tokenValidator, issuerConfigs));
             assertNotNull(testService, "Service should be created successfully with valid dependencies");
 
             // Verify the service can perform basic operations

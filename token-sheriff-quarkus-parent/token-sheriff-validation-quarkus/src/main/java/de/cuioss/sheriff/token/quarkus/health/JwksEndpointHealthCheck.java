@@ -17,6 +17,7 @@ package de.cuioss.sheriff.token.quarkus.health;
 
 import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.quarkus.config.JwtPropertyKeys;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.jwks.JwksLoader;
 import de.cuioss.tools.logging.CuiLogger;
@@ -38,8 +39,15 @@ import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.WAR
  * Health check for JWKS endpoint connectivity.
  * <p>
  * This class implements the SmallRye Health check interface to provide
- * readiness status for JWT validation JWKS endpoints. It only needs access
- * to the issuer configurations to check the health of their JWKS loaders.
+ * readiness status for JWT validation JWKS endpoints. It consults
+ * {@link ObservedValidatorResolver} for the issuer configurations of the validator actually in use
+ * and checks the health of their JWKS loaders.
+ * </p>
+ * <p>
+ * When no issuer configuration is observable — an externally-produced validator is in use, or
+ * nothing is configured at all — the check short-circuits to {@code UP} with
+ * {@code checkedEndpoints=0}: an unconfigured optional extension is no reason to hold the whole
+ * application out of the load balancer. The {@code readiness} data key carries the real state.
  * </p>
  *
  * @since 1.0
@@ -54,14 +62,14 @@ public class JwksEndpointHealthCheck implements HealthCheck {
     private static final String STATUS_UP = "UP";
     private static final String STATUS_DOWN = "DOWN";
 
-    private final List<IssuerConfig> issuerConfigs;
+    private final ObservedValidatorResolver resolver;
     private final ConcurrentHashMap<String, CachedResponse> healthCheckCache = new ConcurrentHashMap<>();
     private final long cacheTimeoutMillis;
 
     @Inject
-    public JwksEndpointHealthCheck(List<IssuerConfig> issuerConfigs,
+    public JwksEndpointHealthCheck(ObservedValidatorResolver resolver,
             @ConfigProperty(name = JwtPropertyKeys.HEALTH.JWKS.CACHE_SECONDS, defaultValue = DEFAULT_CACHE_SECONDS) int cacheSeconds) {
-        this.issuerConfigs = issuerConfigs;
+        this.resolver = resolver;
         this.cacheTimeoutMillis = TimeUnit.SECONDS.toMillis(cacheSeconds);
     }
 
@@ -84,9 +92,16 @@ public class JwksEndpointHealthCheck implements HealthCheck {
      * @return the health check response
      */
     private HealthCheckResponse performHealthCheck() {
-        // The produced issuer config list is guaranteed non-empty: TokenValidatorProducer
-        // fails application startup when no enabled issuer is configured.
         var responseBuilder = HealthCheckResponse.named(HEALTHCHECK_NAME).up();
+
+        List<IssuerConfig> issuerConfigs = resolver.observedIssuerConfigs();
+        if (issuerConfigs.isEmpty()) {
+            return responseBuilder
+                    .withData("checkedEndpoints", 0)
+                    .withData("readiness", resolver.outcome().name())
+                    .withData("loading", "COMPLETE")
+                    .build();
+        }
 
         var results = issuerConfigs.stream()
                 .map(issuerConfig -> EndpointResult.fromIssuerConfig(issuerConfig.getIssuerIdentifier(), issuerConfig))

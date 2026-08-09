@@ -248,6 +248,97 @@ export const mockScenarios = {
     });
   },
 
+  // getConfiguration with a fully populated parser section (issuer namespace configured)
+  configurationPropertyConfigured: () => {
+    devui.jsonRPC.CuiJwtDevUI.getValidationStatus.mockResolvedValue({
+      enabled: true,
+      validatorPresent: true,
+      status: 'ACTIVE',
+      statusMessage: 'JWT validation is active and ready',
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
+      enabled: true,
+      logLevel: 'INFO',
+      parser: {
+        maxTokenSize: 8192,
+        maxPayloadSize: 16_384,
+        maxStringLength: 4096,
+        clockSkewSeconds: 60,
+        requireExpirationTime: true,
+        requireNotBeforeTime: false,
+        requireIssuedAtTime: true,
+      },
+      httpJwksLoader: {
+        connectTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        readTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        sizeLimit: 8192,
+      },
+      issuers: {
+        default: {
+          issuerUri: 'https://keycloak.example.com/auth/realms/master',
+          jwksUri: 'configured',
+          clockSkewSeconds: 60,
+        },
+      },
+    });
+  },
+
+  // getConfiguration when an externally-produced TokenValidator is observed: both
+  // parserConfig-derived surfaces carry the unavailability marker and no issuer is exposed
+  configurationExternalValidator: () => {
+    devui.jsonRPC.CuiJwtDevUI.getValidationStatus.mockResolvedValue({
+      enabled: true,
+      validatorPresent: true,
+      status: 'ACTIVE',
+      statusMessage: 'JWT validation is active and ready',
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getJwksStatus.mockResolvedValue({
+      status: 'EXTERNAL_VALIDATOR',
+      issuers: [],
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
+      enabled: true,
+      logLevel: 'INFO',
+      parser: { status: 'unavailable (external validator)' },
+      httpJwksLoader: {
+        connectTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        readTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        sizeLimit: 'unavailable (external validator)',
+      },
+      issuers: {},
+    });
+  },
+
+  // getConfiguration when nothing is observable at all
+  configurationNotConfigured: () => {
+    devui.jsonRPC.CuiJwtDevUI.getValidationStatus.mockResolvedValue({
+      enabled: true,
+      validatorPresent: false,
+      status: 'NOT_CONFIGURED',
+      statusMessage: 'No TokenValidator is configured',
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getJwksStatus.mockResolvedValue({
+      status: 'NOT_CONFIGURED',
+      issuers: [],
+    });
+
+    devui.jsonRPC.CuiJwtDevUI.getConfiguration.mockResolvedValue({
+      enabled: true,
+      logLevel: 'INFO',
+      parser: { status: 'unavailable (not configured)' },
+      httpJwksLoader: {
+        connectTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        readTimeoutSeconds: 'per-issuer (default: ~10s, from HttpHandler)',
+        sizeLimit: 'unavailable (not configured)',
+      },
+      issuers: {},
+    });
+  },
+
   // Network error scenario
   networkError: () => {
     const networkError = new Error('Network error');

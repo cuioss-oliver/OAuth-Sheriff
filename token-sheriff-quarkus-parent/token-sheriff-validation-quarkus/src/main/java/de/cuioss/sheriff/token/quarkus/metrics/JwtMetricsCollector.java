@@ -19,6 +19,8 @@ import de.cuioss.sheriff.token.commons.events.EventCategory;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.metrics.MetricIdentifier;
 import de.cuioss.sheriff.token.quarkus.config.JwtPropertyKeys;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -29,6 +31,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jspecify.annotations.Nullable;
 
 import java.util.HashSet;
 import java.util.Map;
@@ -76,7 +79,7 @@ public class JwtMetricsCollector {
     private static final String RESULT_SUCCESS = "success";
 
     private final MeterRegistry registry;
-    private final SecurityEventCounter securityEventCounter;
+    private final ObservedValidatorResolver resolver;
 
     // Caching of counters to avoid lookups
     private final Map<String, Counter> counters = new ConcurrentHashMap<>();
@@ -84,17 +87,20 @@ public class JwtMetricsCollector {
     // Track last known counts to calculate deltas
     private final Map<SecurityEventCounter.EventType, Long> lastKnownCounts = new ConcurrentHashMap<>();
 
+    // The validator whose counter the current baselines belong to; deltas are re-baselined when it changes
+    private @Nullable TokenValidator baselinedValidator;
+
     /**
-     * Creates a new JwtMetricsCollector with the given MeterRegistry and SecurityEventCounter.
+     * Creates a new JwtMetricsCollector with the given MeterRegistry and validator resolver.
      *
      * @param registry the Micrometer registry
-     * @param securityEventCounter the security event counter for monitoring validation events
+     * @param resolver resolves the validator whose security events are exported
      */
     @Inject
     public JwtMetricsCollector(MeterRegistry registry,
-            SecurityEventCounter securityEventCounter) {
+            ObservedValidatorResolver resolver) {
         this.registry = registry;
-        this.securityEventCounter = securityEventCounter;
+        this.resolver = resolver;
     }
 
     /**
@@ -175,9 +181,23 @@ public class JwtMetricsCollector {
     }
 
     /**
-     * Updates security event counters from the SecurityEventCounter state.
+     * Updates security event counters from the observed validator's SecurityEventCounter state.
+     * <p>
+     * Goes idle without throwing when no validator is observable, and re-baselines the deltas when
+     * the observed validator changes so two validators' histories are never mixed.
+     * </p>
      */
     private void updateSecurityEventCounters() {
+        TokenValidator validator = resolver.observedValidator().orElse(null);
+        if (validator == null) {
+            return;
+        }
+        if (validator != baselinedValidator) {
+            lastKnownCounts.clear();
+            baselinedValidator = validator;
+        }
+        SecurityEventCounter securityEventCounter = validator.getSecurityEventCounter();
+
         // Get current counts for all event types
         Map<SecurityEventCounter.EventType, Long> currentCounts = securityEventCounter.getCounters();
 

@@ -17,6 +17,8 @@ package de.cuioss.sheriff.token.quarkus.metrics;
 
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.metrics.MetricIdentifier;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
@@ -25,6 +27,11 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
+import static org.easymock.EasyMock.createNiceMock;
+import static org.easymock.EasyMock.expect;
+import static org.easymock.EasyMock.replay;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -38,6 +45,17 @@ class JwtMetricsCollectorRebaselineTest {
 
     private static final SecurityEventCounter.EventType EVENT =
             SecurityEventCounter.EventType.ACCESS_TOKEN_CREATED;
+
+    /**
+     * Pins a resolver to a validator exposing the supplied security event counter.
+     */
+    private static ObservedValidatorResolver observing(SecurityEventCounter counter) {
+        TokenValidator validator = createNiceMock(TokenValidator.class);
+        expect(validator.getSecurityEventCounter()).andStubReturn(counter);
+        replay(validator);
+        return new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.PROPERTY_CONFIGURED,
+                validator, List.of(), null);
+    }
 
     private double counterValue(SimpleMeterRegistry registry) {
         return registry.find(MetricIdentifier.VALIDATION.SUCCESS)
@@ -55,7 +73,7 @@ class JwtMetricsCollectorRebaselineTest {
         securityEventCounter.increment(EVENT);
         securityEventCounter.increment(EVENT);
 
-        JwtMetricsCollector collector = new JwtMetricsCollector(registry, securityEventCounter);
+        JwtMetricsCollector collector = new JwtMetricsCollector(registry, observing(securityEventCounter));
         collector.initialize();
 
         assertEquals(2.0, counterValue(registry),
@@ -67,7 +85,7 @@ class JwtMetricsCollectorRebaselineTest {
     void rebaselinesAfterExternalReset() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
-        JwtMetricsCollector collector = new JwtMetricsCollector(registry, securityEventCounter);
+        JwtMetricsCollector collector = new JwtMetricsCollector(registry, observing(securityEventCounter));
         collector.initialize();
 
         // Normal export: positive delta
@@ -94,7 +112,7 @@ class JwtMetricsCollectorRebaselineTest {
     void updateWithoutNewEventsIsNoop() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
-        JwtMetricsCollector collector = new JwtMetricsCollector(registry, securityEventCounter);
+        JwtMetricsCollector collector = new JwtMetricsCollector(registry, observing(securityEventCounter));
         collector.initialize();
 
         securityEventCounter.increment(EVENT);
@@ -111,7 +129,7 @@ class JwtMetricsCollectorRebaselineTest {
     void warnsWhenNoMicrometerCounterRegistered() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
-        JwtMetricsCollector collector = new JwtMetricsCollector(registry, securityEventCounter);
+        JwtMetricsCollector collector = new JwtMetricsCollector(registry, observing(securityEventCounter));
 
         // initialize() is deliberately not called: no Micrometer counters are registered
         securityEventCounter.increment(EVENT);

@@ -16,6 +16,8 @@
 package de.cuioss.sheriff.token.quarkus.health;
 
 import de.cuioss.sheriff.token.quarkus.config.JwtTestProfile;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -26,8 +28,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
+import static org.easymock.EasyMock.createNiceMock;
 import static org.junit.jupiter.api.Assertions.*;
 
 @QuarkusTest
@@ -86,6 +90,9 @@ class TokenValidatorHealthCheckTest {
             int issuerCount = ((Number) issuerCountValue).intValue();
             assertTrue(issuerCount > 0,
                     "issuerCount should be greater than 0 when UP, but was: " + issuerCount);
+
+            assertEquals("configured", data.get("status"),
+                    "status should report the property-configured outcome");
         }
 
         @Test
@@ -127,6 +134,48 @@ class TokenValidatorHealthCheckTest {
 
             assertEquals(response1.getStatus(), response2.getStatus(),
                     "Response status should be consistent between calls");
+        }
+    }
+
+    @Nested
+    @DisplayName("Resolution Outcome Matrix")
+    class ResolutionOutcomeMatrix {
+
+        @Test
+        @DisplayName("should report UP with the external-validator marker when a foreign validator is observed")
+        void shouldReportExternalValidator() {
+            TokenValidatorHealthCheck check = new TokenValidatorHealthCheck(new ObservedValidatorResolver(
+                    ObservedValidatorResolver.Outcome.EXTERNAL_VALIDATOR,
+                    createNiceMock(TokenValidator.class), List.of(), null));
+
+            HealthCheckResponse response = check.call();
+
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertAll("external validator liveness",
+                    () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                            "Liveness must stay UP when an external validator is in use"),
+                    () -> assertEquals("observing external validator", data.get("status"),
+                            "status must name the external-validator outcome"),
+                    () -> assertEquals(0, ((Number) data.get("issuerCount")).intValue(),
+                            "A foreign validator exposes no issuer configurations"));
+        }
+
+        @Test
+        @DisplayName("should report UP with the not-configured marker when nothing is observable")
+        void shouldReportNotConfigured() {
+            TokenValidatorHealthCheck check = new TokenValidatorHealthCheck(new ObservedValidatorResolver(
+                    ObservedValidatorResolver.Outcome.NOT_CONFIGURED, null, List.of(), null));
+
+            HealthCheckResponse response = check.call();
+
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertAll("unconfigured liveness",
+                    () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                            "An unconfigured optional extension is not a dead application"),
+                    () -> assertEquals("not configured", data.get("status"),
+                            "status must name the not-configured outcome"),
+                    () -> assertEquals(0, ((Number) data.get("issuerCount")).intValue(),
+                            "No issuer configuration is observable"));
         }
     }
 }

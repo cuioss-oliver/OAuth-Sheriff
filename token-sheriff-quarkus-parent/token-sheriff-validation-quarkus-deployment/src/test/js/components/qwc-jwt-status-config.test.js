@@ -5,6 +5,30 @@
 import { html, LitElement } from 'lit';
 import { devui, mockScenarios, resetDevUIMocks } from '../mocks/devui.js';
 
+/**
+ * Flattens a Lit TemplateResult into the string it would render, interpolating every value and
+ * recursing into nested templates. `undefined` and `null` values stringify verbatim, which is what
+ * makes "the panel must never render the literal `undefined`" an assertable negative control.
+ *
+ * @param {unknown} value a TemplateResult, an array of them, or a plain interpolated value
+ * @returns {string} the flattened markup
+ */
+const flattenTemplate = value => {
+  if (Array.isArray(value)) {
+    return value.map(entry => flattenTemplate(entry)).join('');
+  }
+  if (value && value.strings && value.values) {
+    return value.strings.reduce(
+      (accumulator, part, index) =>
+        accumulator +
+        part +
+        (index < value.values.length ? flattenTemplate(value.values[index]) : ''),
+      ''
+    );
+  }
+  return String(value);
+};
+
 // Simplified component class for testing (mirrors the real component's logic)
 class QwcJwtStatusConfig extends LitElement {
   static properties = {
@@ -87,7 +111,126 @@ class QwcJwtStatusConfig extends LitElement {
   render() {
     const result = this._doRender();
     this._lastRenderedResult = result.strings ? result.strings.join('') : result.toString();
+    this._lastRenderedHtml = flattenTemplate(result);
     return result;
+  }
+
+  /**
+   * Mirrors the real component's shared unavailability predicate: reads the section-level marker the
+   * backend emits when no parser configuration is observable and maps it to the notice text.
+   *
+   * @returns {string|null} the notice text, or `null` when the parser values are available
+   */
+  _parserUnavailableNotice() {
+    const marker = this._configuration?.parser?.status;
+    if (!marker) {
+      return null;
+    }
+    return marker.includes('external validator')
+      ? 'Not available — an external validator is in use'
+      : 'Not configured';
+  }
+
+  /**
+   * The real backend always emits both keys; the guards keep the mirror usable for the pre-existing
+   * tests that stub a bare `{ enabled: true }` configuration.
+   *
+   * @returns {Array<unknown>} the parser and HTTP sections that apply to the current configuration
+   */
+  _renderConfigSections() {
+    const config = this._configuration;
+    return [
+      config.parser ? this._renderParserConfiguration() : '',
+      config.httpJwksLoader ? this._renderHttpConfiguration() : '',
+    ];
+  }
+
+  _renderParserConfiguration() {
+    const config = this._configuration;
+    const notice = this._parserUnavailableNotice();
+    if (notice) {
+      return html`
+        <div class="section" data-testid="status-config-parser-section">
+          <h4 class="section-title">Parser Configuration</h4>
+          <div class="config-grid">
+            <div class="config-item">
+              <div class="config-label">Parser Limits</div>
+              <div class="config-value null" data-testid="status-config-parser-unavailable">
+                ${notice}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    return html`
+      <div class="section" data-testid="status-config-parser-section">
+        <h4 class="section-title">Parser Configuration</h4>
+        <div class="config-grid">
+          <div class="config-item">
+            <div class="config-label">Max Token Size</div>
+            <div class="config-value">${config.parser.maxTokenSize} bytes</div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Clock Skew</div>
+            <div class="config-value">${config.parser.clockSkewSeconds} seconds</div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Require Expiration Time</div>
+            <div
+              class="config-value ${this._formatValue(config.parser.requireExpirationTime).className}"
+            >
+              ${this._formatValue(config.parser.requireExpirationTime).text}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Require Not Before Time</div>
+            <div
+              class="config-value ${this._formatValue(config.parser.requireNotBeforeTime).className}"
+            >
+              ${this._formatValue(config.parser.requireNotBeforeTime).text}
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Require Issued At Time</div>
+            <div
+              class="config-value ${this._formatValue(config.parser.requireIssuedAtTime).className}"
+            >
+              ${this._formatValue(config.parser.requireIssuedAtTime).text}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderHttpConfiguration() {
+    const config = this._configuration;
+    const notice = this._parserUnavailableNotice();
+    return html`
+      <div class="section" data-testid="status-config-http-section">
+        <h4 class="section-title">HTTP JWKS Loader</h4>
+        <div class="config-grid">
+          <div class="config-item">
+            <div class="config-label">Connect Timeout</div>
+            <div class="config-value">${config.httpJwksLoader.connectTimeoutSeconds} seconds</div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Read Timeout</div>
+            <div class="config-value">${config.httpJwksLoader.readTimeoutSeconds} seconds</div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">Size Limit</div>
+            <div
+              class="config-value ${notice ? 'null' : ''}"
+              data-testid="status-config-http-size-limit"
+            >
+              ${notice ? notice : html`${config.httpJwksLoader.sizeLimit} bytes`}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   _doRender() {
@@ -171,6 +314,7 @@ class QwcJwtStatusConfig extends LitElement {
               }
             </div>
           </div>
+          ${this._renderConfigSections()}
         </div>
       </div>
     `;
@@ -585,6 +729,93 @@ describe('QwcJwtStatusConfig', () => {
 
       expect(component).not.toHaveRenderedContent('Total Security Events');
       expect(component).not.toHaveRenderedContent('Error Events');
+    });
+  });
+
+  describe('Parser Configuration — PROPERTY_CONFIGURED', () => {
+    beforeEach(async () => {
+      resetDevUIMocks();
+      mockScenarios.configurationPropertyConfigured();
+      await component._loadAllData();
+      await waitForComponentUpdate(component);
+      component.render();
+    });
+
+    it('should render the full parser grid with the real values', () => {
+      expect(component._lastRenderedHtml).toContain('Max Token Size');
+      expect(component._lastRenderedHtml).toContain('8192 bytes');
+      expect(component._lastRenderedHtml).toContain('Clock Skew');
+      expect(component._lastRenderedHtml).toContain('60 seconds');
+    });
+
+    it('should render the HTTP size limit from the parser configuration', () => {
+      expect(component._lastRenderedHtml).toContain('Size Limit');
+      expect(component._lastRenderedHtml).toContain('8192 bytes');
+    });
+
+    it('should render no unavailability notice', () => {
+      expect(component._parserUnavailableNotice()).toBeNull();
+      expect(component._lastRenderedHtml).not.toContain('status-config-parser-unavailable');
+      expect(component._lastRenderedHtml).not.toContain('undefined');
+    });
+  });
+
+  describe('Parser Configuration — EXTERNAL_VALIDATOR', () => {
+    beforeEach(async () => {
+      resetDevUIMocks();
+      mockScenarios.configurationExternalValidator();
+      await component._loadAllData();
+      await waitForComponentUpdate(component);
+      component.render();
+    });
+
+    it('should render the external-validator notice in place of the parser grid', () => {
+      expect(component._parserUnavailableNotice()).toBe(
+        'Not available — an external validator is in use'
+      );
+      expect(component._lastRenderedHtml).toContain(
+        'Not available — an external validator is in use'
+      );
+      expect(component._lastRenderedHtml).not.toContain('Max Token Size');
+    });
+
+    it('should render the same notice for the symmetric sizeLimit peer', () => {
+      expect(component._lastRenderedHtml).toContain('status-config-http-size-limit');
+      expect(component._lastRenderedHtml).not.toContain('undefined bytes');
+    });
+
+    it('should keep emitting the parser and HTTP section containers', () => {
+      expect(component._lastRenderedHtml).toContain('data-testid="status-config-parser-section"');
+      expect(component._lastRenderedHtml).toContain('data-testid="status-config-http-section"');
+    });
+
+    it('should never render the literal undefined', () => {
+      expect(component._lastRenderedHtml).not.toContain('undefined');
+    });
+  });
+
+  describe('Parser Configuration — NOT_CONFIGURED', () => {
+    beforeEach(async () => {
+      resetDevUIMocks();
+      mockScenarios.configurationNotConfigured();
+      await component._loadAllData();
+      await waitForComponentUpdate(component);
+      component.render();
+    });
+
+    it('should render the not-configured notice in place of the parser grid', () => {
+      expect(component._parserUnavailableNotice()).toBe('Not configured');
+      expect(component._lastRenderedHtml).toContain('Not configured');
+      expect(component._lastRenderedHtml).not.toContain('Max Token Size');
+    });
+
+    it('should keep emitting the parser and HTTP section containers', () => {
+      expect(component._lastRenderedHtml).toContain('data-testid="status-config-parser-section"');
+      expect(component._lastRenderedHtml).toContain('data-testid="status-config-http-section"');
+    });
+
+    it('should never render the literal undefined', () => {
+      expect(component._lastRenderedHtml).not.toContain('undefined');
     });
   });
 

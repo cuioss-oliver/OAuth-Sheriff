@@ -45,7 +45,7 @@ public final class TokenSheriffQuarkusLogMessages {
     public static final String PREFIX = "TokenSheriff_Q";
 
     /**
-     * INFO level log messages (001-024; identifiers 017 and 018 are retired and must not be reused).
+     * INFO level log messages (001-025; identifiers 017 and 018 are retired and must not be reused).
      */
     @UtilityClass
     public static final class INFO {
@@ -181,10 +181,16 @@ public final class TokenSheriffQuarkusLogMessages {
                 .prefix(PREFIX)
                 .identifier(24)
                 .build();
+
+        public static final LogRecord OBSERVED_VALIDATOR_RESOLUTION = LogRecordModel.builder()
+                .template("Observed TokenValidator resolution: %s")
+                .prefix(PREFIX)
+                .identifier(25)
+                .build();
     }
 
     /**
-     * WARN level log messages (100-103).
+     * WARN level log messages (100-104).
      */
     @UtilityClass
     public static final class WARN {
@@ -211,6 +217,12 @@ public final class TokenSheriffQuarkusLogMessages {
                 .template("No Micrometer counter found for event type %s, delta %s lost")
                 .prefix(PREFIX)
                 .identifier(103)
+                .build();
+
+        public static final LogRecord AMBIGUOUS_EXTERNAL_VALIDATORS = LogRecordModel.builder()
+                .template("Multiple external TokenValidator beans found (%s) - unable to select one, reporting NOT_CONFIGURED")
+                .prefix(PREFIX)
+                .identifier(104)
                 .build();
 
     }

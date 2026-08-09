@@ -168,6 +168,68 @@ class IssuerConfigResolverTest {
     }
 
     @Nested
+    @DisplayName("hasEnabledIssuers Probe")
+    class HasEnabledIssuersProbe {
+
+        @Test
+        @DisplayName("should report false when no issuer names are discovered")
+        void shouldReportFalseWithoutIssuerNames() {
+            assertFalse(IssuerConfigResolver.hasEnabledIssuers(new TestConfig(Map.of())),
+                    "An empty namespace must not report enabled issuers");
+        }
+
+        @Test
+        @DisplayName("should report false when every discovered issuer is disabled")
+        void shouldReportFalseWhenAllIssuersDisabled() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(TEST_ISSUER), "false",
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(ANOTHER_ISSUER), "false"
+            ));
+
+            assertFalse(IssuerConfigResolver.hasEnabledIssuers(config),
+                    "A namespace whose issuers are all disabled must not report enabled issuers");
+        }
+
+        @Test
+        @DisplayName("should report false when the enabled flag is absent (default is disabled)")
+        void shouldReportFalseWhenEnabledFlagAbsent() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ISSUER_IDENTIFIER.formatted(TEST_ISSUER), "https://example.com"
+            ));
+
+            assertFalse(IssuerConfigResolver.hasEnabledIssuers(config),
+                    "An issuer without an explicit enabled=true must not count as enabled");
+        }
+
+        @Test
+        @DisplayName("should report true when at least one discovered issuer is enabled")
+        void shouldReportTrueWithOneEnabledIssuer() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(TEST_ISSUER), "false",
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(ANOTHER_ISSUER), "true"
+            ));
+
+            assertTrue(IssuerConfigResolver.hasEnabledIssuers(config),
+                    "A single enabled issuer must be enough to report enabled issuers");
+        }
+
+        @Test
+        @DisplayName("should not build any issuer configuration while probing")
+        void shouldNotBuildIssuerConfigsWhileProbing() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(TEST_ISSUER), "true",
+                    JwtPropertyKeys.ISSUERS.ISSUER_IDENTIFIER.formatted(TEST_ISSUER), "http://localhost:8080/realms/test",
+                    JwtPropertyKeys.ISSUERS.JWKS_URL.formatted(TEST_ISSUER), "http://localhost:8080/jwks"
+            ));
+
+            // resolveIssuerConfigs would reject the cleartext http JWKS URL; the probe must not care
+            assertTrue(assertDoesNotThrow(() -> IssuerConfigResolver.hasEnabledIssuers(config),
+                            "The probe must not run builder validation"),
+                    "The enabled issuer must still be detected");
+        }
+    }
+
+    @Nested
     @DisplayName("Enabled Property Handling")
     @EnableTestLogger(debug = IssuerConfigResolver.class)
     class EnabledProperty {

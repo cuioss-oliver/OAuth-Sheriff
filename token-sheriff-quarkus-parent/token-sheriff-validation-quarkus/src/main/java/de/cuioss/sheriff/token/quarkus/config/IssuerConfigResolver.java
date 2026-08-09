@@ -101,7 +101,7 @@ public class IssuerConfigResolver {
     public List<IssuerConfig> resolveIssuerConfigs() {
         LOGGER.info(INFO.RESOLVING_ISSUER_CONFIGURATIONS);
 
-        Set<String> issuerNames = discoverIssuerNames();
+        Set<String> issuerNames = discoverIssuerNames(config);
         if (issuerNames.isEmpty()) {
             throw new IllegalStateException("No issuer configurations found in properties");
         }
@@ -109,7 +109,7 @@ public class IssuerConfigResolver {
         List<IssuerConfig> enabledIssuers = new ArrayList<>();
         for (String issuerName : issuerNames) {
             LOGGER.debug("Resolving issuer configuration for %s", issuerName);
-            if (isIssuerEnabled(issuerName)) {
+            if (isIssuerEnabled(config, issuerName)) {
                 IssuerConfig issuerConfig = createIssuerConfig(issuerName);
                 enabledIssuers.add(issuerConfig);
                 LOGGER.info(INFO.RESOLVED_ISSUER_CONFIGURATION, issuerName);
@@ -127,15 +127,32 @@ public class IssuerConfigResolver {
     }
 
     /**
+     * Probes whether the {@code sheriff.token.issuers.*} namespace yields at least one enabled issuer.
+     * <p>
+     * This reads only MicroProfile {@link Config} — it builds no {@link IssuerConfig} and touches no
+     * CDI bean, so callers can ask "is the extension configured at all?" without triggering the
+     * fail-fast behavior of {@link #resolveIssuerConfigs()}.
+     * </p>
+     *
+     * @param config the configuration instance to probe
+     * @return {@code true} if at least one discovered issuer is enabled, {@code false} otherwise
+     */
+    public static boolean hasEnabledIssuers(Config config) {
+        return discoverIssuerNames(config).stream()
+                .anyMatch(issuerName -> isIssuerEnabled(config, issuerName));
+    }
+
+    /**
      * Discovers all configured issuer names by scanning properties.
      * <p>
      * Scans all property names for the issuer template pattern and extracts
      * the issuer names from matching properties.
      * </p>
      *
+     * @param config the configuration instance to scan
      * @return set of discovered issuer names
      */
-    private Set<String> discoverIssuerNames() {
+    private static Set<String> discoverIssuerNames(Config config) {
         Set<String> issuerNames = ConfigValueParser.discoverNameSegments(
                 config, JwtPropertyKeys.PREFIX + ".issuers.");
         LOGGER.debug("Discovered issuer names: %s", issuerNames);
@@ -145,10 +162,11 @@ public class IssuerConfigResolver {
     /**
      * Checks if an issuer is enabled in the configuration.
      *
+     * @param config the configuration instance to read
      * @param issuerName the issuer name
      * @return true if the issuer is enabled, false otherwise
      */
-    private boolean isIssuerEnabled(String issuerName) {
+    private static boolean isIssuerEnabled(Config config, String issuerName) {
         return config.getOptionalValue(
                 JwtPropertyKeys.ISSUERS.ENABLED.formatted(issuerName),
                 Boolean.class
