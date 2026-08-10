@@ -23,6 +23,7 @@ import de.cuioss.sheriff.token.quarkus.mapper.DiscoverableClaimMapper;
 import de.cuioss.sheriff.token.quarkus.mapper.keycloak.KeycloakGroupsMapperBean;
 import de.cuioss.sheriff.token.quarkus.mapper.keycloak.KeycloakRolesMapperBean;
 import de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.quarkus.producer.BearerTokenProducer;
 import de.cuioss.sheriff.token.quarkus.producer.JsonWebTokenAdapter;
 import de.cuioss.sheriff.token.quarkus.producer.TokenValidatorProducer;
@@ -157,6 +158,8 @@ public class TokenSheriffProcessor {
                         TokenValidatorProducer.class,
                         BearerTokenProducer.class,
                         VertxServletObjectsResolver.class,
+                        // Observation target resolution for the metrics, health and DevUI beans
+                        ObservedValidatorResolver.class,
                         JwtMetricsCollector.class,
                         // CDI-based claim mapper infrastructure
                         ClaimMapperRegistry.class,

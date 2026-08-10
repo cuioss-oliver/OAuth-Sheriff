@@ -17,6 +17,7 @@ package de.cuioss.sheriff.token.quarkus.runtime;
 
 import de.cuioss.sheriff.token.commons.transport.LoaderStatus;
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenType;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -42,6 +43,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class TokenSheriffDevUIRuntimeServiceUnitTest {
 
     private static final String DISABLED_ISSUER = "https://disabled-issuer.example.com";
+    private static final String UNAVAILABLE_EXTERNAL_VALIDATOR = "unavailable (external validator)";
+    private static final String UNAVAILABLE_NOT_CONFIGURED = "unavailable (not configured)";
 
     private TestTokenHolder tokenHolder;
     private IssuerConfig issuerConfig;
@@ -65,8 +68,9 @@ class TokenSheriffDevUIRuntimeServiceUnitTest {
                 .parserConfig(ParserConfig.builder().build())
                 .issuerConfig(issuerConfig)
                 .build();
-        service = new TokenSheriffDevUIRuntimeService(tokenValidator,
-                List.of(issuerConfig, disabledIssuerConfig), ParserConfig.builder().build());
+        service = new TokenSheriffDevUIRuntimeService(new ObservedValidatorResolver(
+                ObservedValidatorResolver.Outcome.PROPERTY_CONFIGURED, tokenValidator,
+                List.of(issuerConfig, disabledIssuerConfig), ParserConfig.builder().build()));
     }
 
     @Test
@@ -83,14 +87,11 @@ class TokenSheriffDevUIRuntimeServiceUnitTest {
     @Test
     @DisplayName("getValidationStatus reports missing validator")
     void validationStatusWithoutValidator() {
-        TokenSheriffDevUIRuntimeService withoutValidator =
-                new TokenSheriffDevUIRuntimeService(null, List.of(issuerConfig), ParserConfig.builder().build());
-
-        Map<String, Object> status = withoutValidator.getValidationStatus();
+        Map<String, Object> status = unconfiguredService().getValidationStatus();
 
         assertEquals(true, status.get("enabled"));
         assertEquals(false, status.get("validatorPresent"));
-        assertEquals("ACTIVE", status.get("status"));
+        assertEquals("NOT_CONFIGURED", status.get("status"));
     }
 
     @Test
@@ -199,6 +200,94 @@ class TokenSheriffDevUIRuntimeServiceUnitTest {
 
         assertEquals(true, health.get("configurationValid"));
         assertEquals("UP", health.get("healthStatus"));
-        assertEquals("All JWT components are healthy and operational", health.get("message"));
+        assertEquals("All JWT components are healthy and operational (PROPERTY_CONFIGURED)",
+                health.get("message"));
+    }
+
+    @Test
+    @DisplayName("EXTERNAL_VALIDATOR marks both parserConfig-derived surfaces as unavailable")
+    void externalValidatorMarksParserSurfacesUnavailable() {
+        Map<String, Object> configuration = externalValidatorService().getConfiguration();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parser = (Map<String, Object>) configuration.get("parser");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> httpJwksLoader = (Map<String, Object>) configuration.get("httpJwksLoader");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> issuers = (Map<String, Object>) configuration.get("issuers");
+
+        assertAll("external validator configuration",
+                () -> assertEquals(UNAVAILABLE_EXTERNAL_VALIDATOR, parser.get("status"),
+                        "The parser section must carry the external-validator unavailability marker"),
+                () -> assertFalse(parser.containsKey("maxTokenSize"),
+                        "No parser field may be emitted without a parser configuration"),
+                () -> assertEquals(UNAVAILABLE_EXTERNAL_VALIDATOR, httpJwksLoader.get("sizeLimit"),
+                        "sizeLimit is the symmetric peer of the parser fields and carries the same marker"),
+                () -> assertTrue(issuers.isEmpty(), "A foreign validator exposes no issuer configurations"));
+    }
+
+    @Test
+    @DisplayName("EXTERNAL_VALIDATOR reports the external view state without throwing")
+    void externalValidatorReportsViewState() {
+        TokenSheriffDevUIRuntimeService externalService = externalValidatorService();
+
+        Map<String, Object> validationStatus = externalService.getValidationStatus();
+        Map<String, Object> jwksStatus = externalService.getJwksStatus();
+        Map<String, Object> health = externalService.getHealthInfo();
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> issuers = (List<Map<String, Object>>) jwksStatus.get("issuers");
+
+        assertAll("external validator view state",
+                () -> assertEquals("ACTIVE", validationStatus.get("status"),
+                        "A foreign validator is still an active validator"),
+                () -> assertEquals(true, validationStatus.get("validatorPresent"),
+                        "The foreign validator must be reported as present"),
+                () -> assertEquals("EXTERNAL_VALIDATOR", jwksStatus.get("status"),
+                        "JWKS status must name the external-validator outcome"),
+                () -> assertTrue(issuers.isEmpty(), "No issuer may be listed for a foreign validator"),
+                () -> assertEquals(true, health.get("configurationValid"),
+                        "An observable validator is a valid configuration"),
+                () -> assertEquals("UP", health.get("healthStatus"), "Health must stay UP"));
+    }
+
+    @Test
+    @DisplayName("NOT_CONFIGURED returns well-formed responses instead of throwing")
+    void notConfiguredReturnsWellFormedResponses() {
+        TokenSheriffDevUIRuntimeService unconfigured = unconfiguredService();
+
+        Map<String, Object> configuration = assertDoesNotThrow(unconfigured::getConfiguration,
+                "getConfiguration must not throw on an empty issuer list");
+        Map<String, Object> jwksStatus = unconfigured.getJwksStatus();
+        Map<String, Object> health = unconfigured.getHealthInfo();
+        Map<String, Object> validation = unconfigured.validateToken("any-token");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parser = (Map<String, Object>) configuration.get("parser");
+
+        assertAll("unconfigured view state",
+                () -> assertEquals(UNAVAILABLE_NOT_CONFIGURED, parser.get("status"),
+                        "The parser section must carry the not-configured unavailability marker"),
+                () -> assertFalse(parser.containsKey("clockSkewSeconds"),
+                        "The clock-skew read must be guarded against an empty issuer list"),
+                () -> assertEquals("NOT_CONFIGURED", jwksStatus.get("status"),
+                        "JWKS status must name the not-configured outcome"),
+                () -> assertEquals(false, health.get("configurationValid"),
+                        "Nothing observable is not a valid configuration"),
+                () -> assertEquals("DOWN", health.get("healthStatus"),
+                        "The DevUI service keeps its configurationValid => UP, else DOWN contract"),
+                () -> assertEquals(false, validation.get("valid"), "No token can be validated"),
+                () -> assertEquals("No validator configured", validation.get("error"),
+                        "validateToken must report the missing validator rather than throwing"));
+    }
+
+    private TokenSheriffDevUIRuntimeService externalValidatorService() {
+        return new TokenSheriffDevUIRuntimeService(new ObservedValidatorResolver(
+                ObservedValidatorResolver.Outcome.EXTERNAL_VALIDATOR, tokenValidator, List.of(), null));
+    }
+
+    private static TokenSheriffDevUIRuntimeService unconfiguredService() {
+        return new TokenSheriffDevUIRuntimeService(new ObservedValidatorResolver(
+                ObservedValidatorResolver.Outcome.NOT_CONFIGURED, null, List.of(), null));
     }
 }

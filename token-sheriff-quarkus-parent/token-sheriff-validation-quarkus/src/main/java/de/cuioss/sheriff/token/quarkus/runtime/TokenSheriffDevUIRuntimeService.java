@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.token.quarkus.runtime;
 
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
@@ -48,24 +49,23 @@ public class TokenSheriffDevUIRuntimeService {
     private static final String CLAIMS = "claims";
     private static final String ISSUER = "issuer";
     private static final String HEALTH_STATUS = "healthStatus";
+    private static final String STATUS = "status";
+    private static final String DETAILS = "details";
+    private static final String NOT_CONFIGURED = "NOT_CONFIGURED";
+    private static final String UNAVAILABLE_EXTERNAL_VALIDATOR = "unavailable (external validator)";
+    private static final String UNAVAILABLE_NOT_CONFIGURED = "unavailable (not configured)";
 
-    private final TokenValidator tokenValidator;
-    private final List<IssuerConfig> issuerConfigs;
-    private final ParserConfig parserConfig;
+    private final ObservedValidatorResolver resolver;
 
     /**
      * Constructor for dependency injection.
      *
-     * @param tokenValidator the token validator
-     * @param issuerConfigs  the issuer configurations from TokenValidatorProducer
-     * @param parserConfig   the parser configuration from TokenValidatorProducer
+     * @param resolver resolves the validator, issuer configurations and parser configuration
+     *                 actually in use — which may belong to an externally-produced validator
      */
     @Inject
-    public TokenSheriffDevUIRuntimeService(TokenValidator tokenValidator, List<IssuerConfig> issuerConfigs,
-            ParserConfig parserConfig) {
-        this.tokenValidator = tokenValidator;
-        this.issuerConfigs = issuerConfigs;
-        this.parserConfig = parserConfig;
+    public TokenSheriffDevUIRuntimeService(ObservedValidatorResolver resolver) {
+        this.resolver = resolver;
     }
 
     /**
@@ -73,15 +73,16 @@ public class TokenSheriffDevUIRuntimeService {
      *
      * @return A map containing runtime validation status information
      */
-   
+
     public Map<String, Object> getValidationStatus() {
-        // JWT validation is always active when this service exists: TokenValidatorProducer
-        // fails application startup when no enabled issuer is configured.
+        boolean validatorPresent = resolver.observedValidator().isPresent();
         Map<String, Object> status = new HashMap<>();
         status.put("enabled", true);
-        status.put("validatorPresent", tokenValidator != null);
-        status.put("status", "ACTIVE");
-        status.put("statusMessage", "JWT validation is active and ready");
+        status.put("validatorPresent", validatorPresent);
+        status.put(STATUS, validatorPresent ? "ACTIVE" : NOT_CONFIGURED);
+        status.put("statusMessage", validatorPresent
+                ? "JWT validation is active and ready"
+                : "No TokenValidator is configured");
         return status;
     }
 
@@ -94,8 +95,8 @@ public class TokenSheriffDevUIRuntimeService {
     public Map<String, Object> getJwksStatus() {
         Map<String, Object> jwksInfo = new HashMap<>();
 
-        // The produced issuer config list is guaranteed non-empty (startup fails otherwise)
-        jwksInfo.put("status", "CONFIGURED");
+        List<IssuerConfig> issuerConfigs = resolver.observedIssuerConfigs();
+        jwksInfo.put(STATUS, issuerConfigs.isEmpty() ? resolver.outcome().name() : "CONFIGURED");
 
         // Build issuers array with details for each configured issuer
         List<Map<String, Object>> issuers = new ArrayList<>();
@@ -126,21 +127,34 @@ public class TokenSheriffDevUIRuntimeService {
         configMap.put("enabled", true);
         configMap.put("logLevel", "INFO");
 
-        // Parser configuration section — values from actual runtime config
+        List<IssuerConfig> issuerConfigs = resolver.observedIssuerConfigs();
+        ParserConfig parserConfig = resolver.observedParserConfig().orElse(null);
+        String unavailableMarker = resolver.outcome() == ObservedValidatorResolver.Outcome.EXTERNAL_VALIDATOR
+                ? UNAVAILABLE_EXTERNAL_VALIDATOR
+                : UNAVAILABLE_NOT_CONFIGURED;
+
+        // Parser configuration section — values from actual runtime config. Both this section and
+        // httpJwksLoader.sizeLimit below are parserConfig-derived, so they carry the same
+        // unavailability marker when no parser configuration is observable.
         Map<String, Object> parser = new HashMap<>();
-        parser.put("maxTokenSize", parserConfig.getMaxTokenSize());
-        parser.put("maxPayloadSize", parserConfig.getMaxPayloadSize());
-        parser.put("maxStringLength", parserConfig.getMaxStringLength());
-        // Clock skew is per-issuer; show the first issuer's value
-        // (the produced issuer config list is guaranteed non-empty)
-        parser.put("clockSkewSeconds", issuerConfigs.getFirst().getClockSkewSeconds());
+        if (parserConfig == null) {
+            parser.put(STATUS, unavailableMarker);
+        } else {
+            parser.put("maxTokenSize", parserConfig.getMaxTokenSize());
+            parser.put("maxPayloadSize", parserConfig.getMaxPayloadSize());
+            parser.put("maxStringLength", parserConfig.getMaxStringLength());
+            // Clock skew is per-issuer; show the first issuer's value when one is observable
+            if (!issuerConfigs.isEmpty()) {
+                parser.put("clockSkewSeconds", issuerConfigs.getFirst().getClockSkewSeconds());
+            }
+        }
         configMap.put("parser", parser);
 
         // HTTP JWKS loader configuration section — approximate defaults from HttpHandler (external library)
         Map<String, Object> httpJwksLoader = new HashMap<>();
         httpJwksLoader.put("connectTimeoutSeconds", "per-issuer (default: ~10s, from HttpHandler)");
         httpJwksLoader.put("readTimeoutSeconds", "per-issuer (default: ~10s, from HttpHandler)");
-        httpJwksLoader.put("sizeLimit", parserConfig.getMaxTokenSize());
+        httpJwksLoader.put("sizeLimit", parserConfig == null ? unavailableMarker : parserConfig.getMaxTokenSize());
         configMap.put("httpJwksLoader", httpJwksLoader);
 
         // Issuers configuration section
@@ -182,6 +196,13 @@ public class TokenSheriffDevUIRuntimeService {
             return result;
         }
 
+        TokenValidator tokenValidator = resolver.observedValidator().orElse(null);
+        if (tokenValidator == null) {
+            result.put(ERROR, "No validator configured");
+            result.put(DETAILS, "No TokenValidator is configured");
+            return result;
+        }
+
         try {
             // Only validate as access token
             TokenContent tokenContent = tokenValidator.createAccessToken(AccessTokenRequest.of(token.trim()));
@@ -204,11 +225,11 @@ public class TokenSheriffDevUIRuntimeService {
         } catch (TokenValidationException e) {
             // Token remains invalid (default state)
             result.put(ERROR, e.getMessage());
-            result.put("details", "Access token validation failed");
+            result.put(DETAILS, "Access token validation failed");
         } catch (JsonException | IllegalArgumentException e) {
             // Handle JSON parsing errors and other token format issues
             result.put(ERROR, "Invalid token format: " + e.getMessage());
-            result.put("details", "Token format is invalid");
+            result.put(DETAILS, "Token format is invalid");
         }
 
         return result;
@@ -221,12 +242,14 @@ public class TokenSheriffDevUIRuntimeService {
      */
    
     public Map<String, Object> getHealthInfo() {
-        // Configuration is always valid when this service exists: TokenValidatorProducer
-        // fails application startup when no enabled issuer is configured.
+        ObservedValidatorResolver.Outcome outcome = resolver.outcome();
+        boolean configurationValid = outcome != ObservedValidatorResolver.Outcome.NOT_CONFIGURED;
         Map<String, Object> health = new HashMap<>();
-        health.put("configurationValid", true);
-        health.put(MESSAGE, "All JWT components are healthy and operational");
-        health.put(HEALTH_STATUS, "UP");
+        health.put("configurationValid", configurationValid);
+        health.put(MESSAGE, configurationValid
+                ? "All JWT components are healthy and operational (%s)".formatted(outcome.name())
+                : "No TokenValidator is configured (%s)".formatted(outcome.name()));
+        health.put(HEALTH_STATUS, configurationValid ? "UP" : "DOWN");
         return health;
     }
 

@@ -27,8 +27,8 @@ Handles build-time processing:
 
 === Health Checks
 
-* `JwksEndpointHealthCheck` (`@Readiness`): Monitors JWKS endpoint connectivity
-* `TokenValidatorHealthCheck` (`@Liveness`): Checks whether issuer configurations are present
+* `JwksEndpointHealthCheck` (`@Readiness`): Monitors JWKS endpoint connectivity, short-circuiting to UP with `checkedEndpoints=0` when no issuer configuration is observable
+* `TokenValidatorHealthCheck` (`@Liveness`): Consults `ObservedValidatorResolver` and always reports UP, carrying the real state in a `status` marker
 
 Automatically discovered by Quarkus -- no explicit registration needed. See xref:health-checks.adoc[Health Checks] for details.
 

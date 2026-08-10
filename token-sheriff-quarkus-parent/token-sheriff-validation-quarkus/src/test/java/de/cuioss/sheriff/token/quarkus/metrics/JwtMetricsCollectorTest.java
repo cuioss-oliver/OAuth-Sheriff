@@ -19,6 +19,7 @@ import de.cuioss.sheriff.token.commons.events.SecurityEventCounter;
 import de.cuioss.sheriff.token.commons.events.SecurityEventCounter.EventType;
 import de.cuioss.sheriff.token.commons.metrics.MetricIdentifier;
 import de.cuioss.sheriff.token.quarkus.config.JwtTestProfile;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.Counter;
@@ -31,8 +32,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
+import static org.easymock.EasyMock.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -128,7 +132,7 @@ class JwtMetricsCollectorTest {
         // composite and the scheduled update would interfere with delta assertions)
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
         SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
-        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry, securityEventCounter);
+        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry, observing(securityEventCounter));
         localCollector.initialize();
 
         // Record some events and export them
@@ -169,7 +173,7 @@ class JwtMetricsCollectorTest {
         preInitCounter.increment(testEventType);
 
         SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
-        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry, preInitCounter);
+        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry, observing(preInitCounter));
         localCollector.initialize();
 
         Counter metricCounter = localRegistry.find(MetricIdentifier.VALIDATION.ERRORS)
@@ -178,5 +182,92 @@ class JwtMetricsCollectorTest {
         assertNotNull(metricCounter, "Counter should exist");
         assertEquals(2.0, metricCounter.count(),
                 "Pre-initialization events must be exported as deltas, not silently dropped");
+    }
+
+    @Test
+    @DisplayName("Should go idle without throwing when no validator is observable")
+    void shouldBeSilentNoOpWhenNothingObservable() {
+        SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
+        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry,
+                new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.NOT_CONFIGURED,
+                        null, List.of(), null));
+
+        assertDoesNotThrow(localCollector::initialize,
+                "Initialization must register counters without touching a validator");
+        assertDoesNotThrow(localCollector::updateCounters,
+                "A scheduled tick must go idle instead of throwing when nothing is observable");
+
+        Counter metricCounter = localRegistry.find(MetricIdentifier.VALIDATION.ERRORS)
+                .tag("event_type", EventType.SIGNATURE_VALIDATION_FAILED.name())
+                .counter();
+        assertNotNull(metricCounter, "Counters are registered regardless of the resolution outcome");
+        assertEquals(0.0, metricCounter.count(), "No event may be exported when nothing is observable");
+    }
+
+    @Test
+    @DisplayName("Should re-baseline when the observed validator changes between ticks")
+    void shouldRebaselineWhenObservedValidatorChanges() {
+        EventType testEventType = EventType.SIGNATURE_VALIDATION_FAILED;
+        SecurityEventCounter firstCounter = new SecurityEventCounter();
+        firstCounter.increment(testEventType);
+
+        SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
+        SwitchableResolver resolver = new SwitchableResolver(observing(firstCounter));
+        JwtMetricsCollector localCollector = new JwtMetricsCollector(localRegistry, resolver);
+        localCollector.initialize();
+
+        Counter metricCounter = localRegistry.find(MetricIdentifier.VALIDATION.ERRORS)
+                .tag("event_type", testEventType.name())
+                .counter();
+        assertNotNull(metricCounter, "Counter should exist");
+        assertEquals(1.0, metricCounter.count(), "The first validator's single event should be exported");
+
+        // A different validator carrying a lower count must not be read against the old baseline
+        SecurityEventCounter secondCounter = new SecurityEventCounter();
+        secondCounter.increment(testEventType);
+        resolver.switchTo(observing(secondCounter));
+        localCollector.updateCounters();
+
+        assertEquals(2.0, metricCounter.count(),
+                "The new validator's event must be exported against a fresh baseline");
+    }
+
+    /**
+     * A resolver whose delegate can be swapped, standing in for a validator that changes between
+     * scheduled ticks.
+     */
+    private static final class SwitchableResolver extends ObservedValidatorResolver {
+
+        private ObservedValidatorResolver delegate;
+
+        SwitchableResolver(ObservedValidatorResolver delegate) {
+            super(Outcome.NOT_CONFIGURED, null, List.of(), null);
+            this.delegate = delegate;
+        }
+
+        void switchTo(ObservedValidatorResolver next) {
+            this.delegate = next;
+        }
+
+        @Override
+        public Outcome outcome() {
+            return delegate.outcome();
+        }
+
+        @Override
+        public Optional<TokenValidator> observedValidator() {
+            return delegate.observedValidator();
+        }
+    }
+
+    /**
+     * Pins a resolver to a validator exposing the supplied security event counter.
+     */
+    private static ObservedValidatorResolver observing(SecurityEventCounter counter) {
+        TokenValidator validator = createNiceMock(TokenValidator.class);
+        expect(validator.getSecurityEventCounter()).andStubReturn(counter);
+        replay(validator);
+        return new ObservedValidatorResolver(ObservedValidatorResolver.Outcome.PROPERTY_CONFIGURED,
+                validator, List.of(), null);
     }
 }

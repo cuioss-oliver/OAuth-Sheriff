@@ -22,9 +22,26 @@ The token-sheriff-validation-quarkus extension provides MicroProfile Health chec
   "name": "jwks-endpoints",
   "data": {
     "checkedEndpoints": 3,
+    "readiness": "READY",
     "issuer.0.url": "https://keycloak.example.com/auth/realms/master",
     "issuer.0.jwksType": "HTTP",
     "issuer.0.status": "UP"
+  }
+}
+----
+
+When no issuer configuration is observable, the check reports `UP` with `checkedEndpoints` of `0`
+and a `readiness` marker naming the resolution outcome:
+
+[source,json]
+----
+{
+  "status": "UP",
+  "name": "jwks-endpoints",
+  "data": {
+    "checkedEndpoints": 0,
+    "readiness": "EXTERNAL_VALIDATOR",
+    "loading": "COMPLETE"
   }
 }
 ----
@@ -38,7 +55,19 @@ The token-sheriff-validation-quarkus extension provides MicroProfile Health chec
 {
   "status": "UP",
   "name": "jwt-validator",
-  "data": { "issuerCount": 3 }
+  "data": { "issuerCount": 3, "status": "configured" }
+}
+----
+
+When an externally-produced `TokenValidator` is in use, or nothing is configured at all, the check
+still reports `UP` and carries the real state in the `status` data key:
+
+[source,json]
+----
+{
+  "status": "UP",
+  "name": "jwt-validator",
+  "data": { "issuerCount": 0, "status": "observing external validator" }
 }
 ----
 
@@ -74,14 +103,28 @@ readinessProbe:
 
 == Health Check Behavior
 
+Both checks consult `ObservedValidatorResolver`, which reports on the `TokenValidator` actually in
+use. It probes the `sheriff.token.issuers.*` property namespace first and, when that namespace is
+empty, looks for an externally-produced `TokenValidator` bean without instantiating the extension's
+own producer. The three resolution outcomes are `PROPERTY_CONFIGURED`, `EXTERNAL_VALIDATOR` and
+`NOT_CONFIGURED`.
+
 === JWKS Endpoint Health Check
 
 * Caches results for 30 seconds to prevent excessive network calls
 * Reports per-issuer status including URL, JWKS type, and connectivity
-* Returns DOWN if any configured JWKS endpoint has a non-OK loader status (unreachable, still initializing, or in error state)
+* Returns DOWN if any observed JWKS endpoint has a non-OK loader status (unreachable, still initializing, or in error state)
+* Short-circuits to UP with `checkedEndpoints=0` and `readiness` set to `EXTERNAL_VALIDATOR` or
+  `NOT_CONFIGURED` when no issuer configuration is observable — an unconfigured optional extension is
+  no reason to hold the whole application out of the load balancer
 
 === Token Validator Health Check
 
-* Injects `List<IssuerConfig>` and checks whether the list is non-empty
-* Returns DOWN if no issuer configurations are found
-* Lightweight check focused on configuration availability (does not inject `TokenValidator`)
+* Consults `ObservedValidatorResolver` rather than injecting the extension's produced `List<IssuerConfig>`
+* Always returns UP — an unconfigured optional extension is not a dead application
+* Reports the real state in the `status` data key: `configured`, `observing external validator`, or
+  `not configured`, alongside the observable `issuerCount`
+
+NOTE: An externally-produced `TokenValidator` does not expose its issuer configurations or its parser
+limits, so the health checks can detect it but cannot enumerate its issuers or probe its JWKS
+loaders. They report the explicit markers above rather than fabricating a verdict.

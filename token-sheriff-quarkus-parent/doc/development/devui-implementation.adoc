@@ -53,7 +53,24 @@ CardPageBuildItem createJwtDevUICard() {
 }
 ----
 
-The JSON-RPC service is registered via `createJwtDevUIJsonRPCService()` in `TokenSheriffProcessor.java` and provided at runtime by `TokenSheriffDevUIRuntimeService.java` (`@ApplicationScoped`, injects `TokenValidator`, `List<IssuerConfig>`, and `ParserConfig`).
+The JSON-RPC service is registered via `createJwtDevUIJsonRPCService()` in `TokenSheriffProcessor.java` and provided at runtime by `TokenSheriffDevUIRuntimeService.java` (`@ApplicationScoped`, injects a single `ObservedValidatorResolver`).
+
+The resolver reports on the `TokenValidator` actually in use, so the panel stays functional when an
+application supplies its own `TokenValidator` and leaves the `sheriff.token.issuers.*` namespace
+empty. Its three outcomes map to three view states:
+
+* `PROPERTY_CONFIGURED` — the extension's own validator; every view renders as before.
+* `EXTERNAL_VALIDATOR` — an externally-produced validator is observed. Token validation works, but
+  its issuer configurations and parser limits are not exposed, so `getJwksStatus()` reports
+  `EXTERNAL_VALIDATOR` with an empty `issuers` array and `getConfiguration()` emits a
+  `{"status": "unavailable (external validator)"}` marker for the `parser` section and for
+  `httpJwksLoader.sizeLimit`.
+* `NOT_CONFIGURED` — nothing observable. Every method returns a well-formed response rather than
+  throwing; the same two surfaces carry the `unavailable (not configured)` marker, and
+  `getHealthInfo()` reports `configurationValid=false` and `healthStatus=DOWN`.
+
+The `qwc-jwt-status-config.js` web component renders an explicit notice for the unavailability
+marker instead of the underlying field values.
 
 == JSON-RPC Methods
 

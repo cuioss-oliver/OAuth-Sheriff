@@ -1,0 +1,126 @@
+= ADR-0002: Observability beans observe the resolved TokenValidator, not the issuer property namespace
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Observability beans resolve against the TokenValidator object actually produced (any qualifier), never against the extension's own property-derived issuer state
+// tags: quarkus-extension, cdi, observability, health-checks, metrics
+// affects: token-sheriff-validation-quarkus
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A Quarkus extension that exposes a facade type over a CDI-produced dependency graph faces a recurring
+choice point wherever it also ships observability beans (health checks, metrics collectors, admin/DevUI
+panels) for that facade: **what should those beans observe** — the facade instance an embedder is actually
+using, or the extension's own configuration namespace that would normally produce one?
+
+The two answers diverge sharply whenever an embedder supplies its own, differently-qualified instance of
+the facade type instead of relying on the extension's default producer. If the observability beans inject
+the *by-products* of the extension's own producer (its derived configuration objects, its internal
+counters) rather than the facade instance in use, every one of those by-products transitively triggers the
+producer's initialization — including its property-namespace validation — even though nothing about the
+embedder's setup is actually broken. The embedder is then punished for a configuration surface it never
+intended to use: liveness/readiness report failure, a scheduled collector throws on every tick, and any
+admin panel throws on every call. The extension's own fail-fast contract, which is correct and desirable
+when its *own* namespace is populated but invalid, fires for a namespace the embedder deliberately left
+empty.
+
+The structural choice this creates is whether an extension's observability layer couples to **how the
+extension configures its own default instance** (property namespace, defaults, internal derivation) or to
+**what CDI instance is actually resolved and in use**. The former is fragile to exactly the embedding
+pattern the extension exists to support; the latter requires a resolution seam that can find "the instance
+in use" without depending on, or eagerly instantiating, the extension's own default producer.
+
+A second, subtler choice point follows from the first: once observability decouples from the extension's
+own producer, it can no longer assume anything about the resolved instance's *internal* configuration
+state unless that state is exposed on the facade's public contract. A foreign-produced instance may not
+expose everything the extension's own producer's by-products used to.
+
+== Decision
+
+Observability beans resolve and observe the CDI instance actually in use, discovered as a first-class CDI
+lookup over the facade type, rather than reconstructing or re-deriving instance state from the extension's
+own configuration namespace or its own producer's by-products.
+
+The resolution seam performs a cheap, non-instantiating configuration probe first: when the extension's own
+namespace is populated, the extension's own produced instance is the observation target and behavior is
+unchanged. When the namespace is empty, the seam enumerates every CDI bean of the facade type (any
+qualifier) via a broad `@Any`-scoped lookup, explicitly **excluding the extension's own producer bean
+class from consideration without invoking it** — inspecting the CDI bean metadata is sufficient to identify
+and skip it; nothing about that exclusion requires calling the producer. Exactly one surviving candidate is
+the observation target; more than one is treated as ambiguous (the extension cannot guess which embedder
+instance is authoritative) and resolves to the same "not configured" outcome as finding none at all.
+
+Observability beans that cannot resolve any instance — neither the extension's own nor a foreign one —
+degrade honestly rather than failing: liveness reports available/up with an explicit status marker
+distinguishing "nothing configured" from "healthy," scheduled work becomes a silent no-op instead of a
+per-tick exception, and any admin/diagnostic surface renders an explicit "not configured" state instead of
+throwing on missing fields.
+
+The facade type's public contract is the sole source of information about a foreign instance. Observability
+does not reach past the facade to reconstruct internal configuration the facade does not expose — see
+Alternatives Considered for the extension-surface option this decision deliberately declines.
+
+== Consequences
+
+=== Positive
+
+* An embedder that supplies its own instance of the facade type is never penalized by the extension's own configuration surface — the extension's default producer's fail-fast validation only fires for extension-configured deployments, exactly where it belongs.
+* Observability behavior for the extension-configured path is unchanged: the resolution seam's first branch is the extension's own producer, so no regression is introduced for the common case.
+* The resolution seam is the single place that knows how to find "the instance in use," so every consumer (health checks, metrics, diagnostics) shares one honest-degradation contract instead of each reimplementing its own tolerance for an absent configuration.
+* The extension's own producer keeps its correct fail-fast contract for its own namespace; nothing about this decision weakens that validation for extension-configured deployments.
+
+=== Negative
+
+* Observability of a foreign-produced instance is limited to what the facade's public contract exposes. Anything the extension's own producer derives internally and does not retain on the facade (e.g. per-source configuration detail) is permanently unavailable for a foreign instance under this decision.
+* The resolution seam adds one more moving part between "an instance exists" and "observability sees it" — a lookup and a memoized outcome, rather than direct injection.
+
+=== Risks
+
+* Ambiguity between multiple foreign candidates is resolved conservatively (treated as unconfigured), which means a deployment with more than one differently-qualified instance never receives targeted observability for any of them without further extension-specific disambiguation.
+* Health checks and diagnostic surfaces for a foreign instance can only ever report a coarse "detected, limited visibility" state rather than the deep verification available for the extension-configured path. This is an accepted, permanent asymmetry, not a temporary gap.
+
+== Alternatives Considered
+
+**Extend the facade's public contract with a read-only accessor for its internal configuration state.**
+This would let observability beans recover full visibility into a foreign-produced instance — enumerating
+its sources, probing its internal loaders — by reading the accessor instead of stopping at "instance
+present." Rejected: it grows the facade's public surface specifically to serve an internal-only concern
+(the extension's own diagnostics), coupling the facade's stable contract to an observability need that
+belongs entirely inside the extension. The facade is deliberately kept minimal; any consumer needing this
+depth of visibility can supply its own facade construction, which already carries full knowledge of its own
+configuration.
+
+**Keep observability coupled to the extension's own producer and its by-products, and add defensive
+try/catch or lazy-initialization guards around each consumer.** This treats the symptom per-consumer
+instead of the cause: each observability bean would need its own tolerance logic for a producer that may or
+may not be safe to trigger, duplicating the same judgment call (initialize now? initialize later? never?)
+across every consumer instead of resolving it once. It also does nothing for the embedder scenario itself —
+the beans would still be blind to the instance actually in use, merely failing more quietly.
+
+**Gate the extension's own producer at build time so it is registered only when its property namespace is
+populated.** This would prevent the producer's `@PostConstruct` failure from firing at all in the
+unconfigured case, but does not solve the underlying problem: an embedder supplying a foreign instance
+still needs observability to find and observe *that* instance, which a build-time gate on the extension's
+own producer cannot provide. It only suppresses the failure; it does not deliver the intended capability.
+
+A summary that unifies the rejected alternatives: each either grows the wrong contract's surface to serve
+an internal concern, or treats an instance-discovery problem as a defensive-coding problem. The chosen
+seam is the only option that both discovers the instance in use and keeps the facade's contract unchanged.
+
+== References
+
+* `pm-dev-java:java-cdi` — constructor injection, producer, and `Instance<T>` lookup patterns this decision's resolution seam builds on.
+* `pm-dev-java-cui:cui-logging` — the `LogRecord` / `CuiLogger` pattern used to log resolution-outcome transitions without per-tick noise.

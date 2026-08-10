@@ -15,21 +15,24 @@
  */
 package de.cuioss.sheriff.token.quarkus.health;
 
-import de.cuioss.sheriff.token.validation.IssuerConfig;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.eclipse.microprofile.health.Liveness;
 
-import java.util.List;
-
 /**
  * Health check for JWT validation configuration.
  * <p>
  * This class implements the SmallRye Health check interface to provide
- * liveness status for the JWT validation component. It only needs access
- * to the issuer configurations to verify they are properly loaded.
+ * liveness status for the JWT validation component. It consults
+ * {@link ObservedValidatorResolver} to report on the validator actually in use, which may be an
+ * externally-produced one rather than the extension's own.
+ * </p>
+ * <p>
+ * Liveness is always {@code UP}: an unconfigured optional extension is not a dead application. The
+ * {@code status} data key carries the real state.
  * </p>
  *
  * @since 1.0
@@ -39,21 +42,31 @@ import java.util.List;
 public class TokenValidatorHealthCheck implements HealthCheck {
 
     private static final String HEALTHCHECK_NAME = "jwt-validator";
+    private static final String STATUS_EXTERNAL_VALIDATOR = "observing external validator";
+    private static final String STATUS_NOT_CONFIGURED = "not configured";
+    private static final String STATUS_CONFIGURED = "configured";
 
-    private final List<IssuerConfig> issuerConfigs;
+    private final ObservedValidatorResolver resolver;
 
     @Inject
-    public TokenValidatorHealthCheck(List<IssuerConfig> issuerConfigs) {
-        this.issuerConfigs = issuerConfigs;
+    public TokenValidatorHealthCheck(ObservedValidatorResolver resolver) {
+        this.resolver = resolver;
     }
 
     @Override
     public HealthCheckResponse call() {
-        // The produced issuer config list is guaranteed non-empty: TokenValidatorProducer
-        // fails application startup when no enabled issuer is configured.
         return HealthCheckResponse.named(HEALTHCHECK_NAME)
                 .up()
-                .withData("issuerCount", issuerConfigs.size())
+                .withData("issuerCount", resolver.observedIssuerConfigs().size())
+                .withData("status", statusFor(resolver.outcome()))
                 .build();
+    }
+
+    private static String statusFor(ObservedValidatorResolver.Outcome outcome) {
+        return switch (outcome) {
+            case PROPERTY_CONFIGURED -> STATUS_CONFIGURED;
+            case EXTERNAL_VALIDATOR -> STATUS_EXTERNAL_VALIDATOR;
+            case NOT_CONFIGURED -> STATUS_NOT_CONFIGURED;
+        };
     }
 }
