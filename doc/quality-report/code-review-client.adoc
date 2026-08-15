@@ -24,7 +24,7 @@ The one substantive defect is in the refresh-token rotation-family bookkeeping, 
 |===
 |Severity |*major* (self-inflicted DoS; reuse signal becomes untrustworthy)
 |Confidence |high
-|Location |`client/lifecycle/TokenLifecycleManager.java:156-162, 219-228, 313-322`; `client/lifecycle/RefreshTokenFamily.java:117-127`
+|Location |`client/lifecycle/TokenLifecycleManager.java:156-162, 219-228, 313-322`; `client/token/RefreshTokenFamily.java:117-127`
 |===
 
 `store(sessionId, token)` seeds the rotation family with `families.computeIfAbsent(sessionId, ...)` — an existing family is left untouched when a *newer* bundle is stored. But storing a newer bundle is a normal event: a re-login into the same session, or completing the module's own step-up flow (`StepUpHandler` → new `authorization_code` exchange → the RP stores the new bundle for the same session). The family then still holds the old grant's refresh token as current.

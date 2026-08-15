@@ -23,11 +23,11 @@ The weaknesses are concentrated: the *entry-point* documents (root `README.md`, 
 [cols="1,4"]
 |===
 |Severity |*major* (first-contact user experience; broken example)
-|Confidence |high
+|Confidence |high — verification verdict: PARTIALLY CONFIRMED (example brokenness confirmed; "fails at startup" corrected to "fails at first use", see xref:adversarial-verification.adoc[verification report])
 |Location |`README.md:92-97`; `token-sheriff-validation-quarkus/README.adoc` (~108-138, "Basic Configuration" and "Multiple Issuers" YAML examples)
 |===
 
-The minimal example shows only `sheriff.token.issuers.keycloak.jwks.http.well-known-url=…`. But issuers default to *disabled*: `IssuerConfigResolver.java:169-174` (`.orElse(false); // Default to disabled — require explicit enabled=true`) and line 122 throws `IllegalStateException("No enabled issuer configurations found")`. The extension's own config reference gets it right ("Issuers must be explicitly enabled (default is disabled)", `META-INF/quarkus-config-doc.adoc:14-15`). The README examples as written produce a startup failure.
+The minimal example shows only `sheriff.token.issuers.keycloak.jwks.http.well-known-url=…`. But issuers default to *disabled*: `IssuerConfigResolver.java:169-174` (`.orElse(false); // Default to disabled — require explicit enabled=true`) and line 122 throws `IllegalStateException("No enabled issuer configurations found")`. The extension's own config reference gets it right ("Issuers must be explicitly enabled (default is disabled)", `META-INF/quarkus-config-doc.adoc:14-15`). The README examples as written do not work: the `IllegalStateException` surfaces at first use — the first `@BearerAuth` request or health probe — rather than at deployment, because no eager startup validation exists (see xref:code-review-quarkus-benchmarking.adoc#Q-3[Q-3]).
 
 [#D-2]
 === D-2: `doc/client/README.adoc` still carries a claim other documents explicitly retracted as false ("issues no HTTP of its own")
@@ -39,7 +39,7 @@ The minimal example shows only `sheriff.token.issuers.keycloak.jwks.http.well-kn
 |Location |`doc/client/README.adoc:19-20`; also `token-sheriff-client/README.adoc` (~55), `client/package-info.java:29`, `doc/commons/README.adoc:22-24`, `doc/README.adoc:30`
 |===
 
-The client hub states "The engine owns two aspects and delegates the rest — it issues no HTTP of its own". This exact claim is explicitly retracted elsewhere: `doc/client/requirements.adoc:66` ("It is *not* true that the client 'issues no HTTP of its own.'") and `doc/client/architecture.adoc:138-141` ("an earlier revision claimed the engine 'issues no HTTP of its own.' That claim was false and is corrected here"). The code confirms the retraction: `client/internal/BackChannelHttp.java` drives `java.net.http.HttpClient` directly.
+The client hub states "The engine owns two aspects and delegates the rest — it issues no HTTP of its own". This exact claim is explicitly retracted elsewhere: `doc/client/requirements.adoc:56` ("It is *not* true that the client 'issues no HTTP of its own.'") and `doc/client/architecture.adoc:138-141` ("an earlier revision claimed the engine 'issues no HTTP of its own.' That claim was false and is corrected here"). The code confirms the retraction: `client/internal/BackChannelHttp.java` drives `java.net.http.HttpClient` directly.
 
 The same stale framing survives in `token-sheriff-client/README.adoc` ("outbound bytes travel through the commons transport base layer" — the client imports only `ParserConfig` from that package), in `doc/commons/README.adoc` ("Transport … *all* outbound IdP HTTP (discovery, JWKS, token, userinfo, revocation, introspection, end-session, PAR)"), and in the hub `doc/README.adoc`. The corrected framing (commons owns discovery + JWKS; the client owns its own back channel) lives in `doc/commons/requirements.adoc` COMMONS-1, `doc/commons/architecture.adoc:39-41`, `doc/commons/specification/transport.adoc:17-19`, and `doc/client/threat-model.adoc:39-43`. Classic multi-file drift: the correction was applied to the spec layer but not to the hub/README layer above it.
 

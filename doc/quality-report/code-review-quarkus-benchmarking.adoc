@@ -68,10 +68,12 @@ An application with missing, typo'd, or invalid `sheriff.token.issuers.*` config
 |===
 |Severity |*major* (operational; contradicts documented liveness semantics)
 |Confidence |medium
-|Location |`health/TokenValidatorHealthCheck.java:33-36, 57-62`; `observability/ObservedValidatorResolver.java:190-196, 210-212`; `doc/integration/health-checks.adoc:60-63`
+|Location |`health/TokenValidatorHealthCheck.java:33-36, 57-62`; `observability/ObservedValidatorResolver.java:190-196, 210-212`; `token-sheriff-quarkus-parent/doc/integration/health-checks.adoc:60-63`
 |===
 
-`TokenValidatorHealthCheck` documents "Liveness is always UP", but `call()` invokes `resolver.observedIssuerConfigs()` → `ObservedValidatorResolver.doResolve()`, whose `PROPERTY_CONFIGURED` branch calls `producerHandle.get()`, instantiating `TokenValidatorProducer`. If the populated namespace is invalid (orphaned `dpop.*` property, missing `issuer-identifier`, bad JWKS config), `@PostConstruct init()` throws; a `NOT_CONFIGURED` resolution is never memoized for this case, so the exception propagates from every probe. SmallRye Health reports a throwing check as DOWN — and for a *liveness* probe, Kubernetes then restarts the pod endlessly for a configuration error a restart cannot fix. Readiness DOWN would be correct fail-closed behavior; liveness DOWN contradicts both the Javadoc and `doc/integration/health-checks.adoc`.
+`TokenValidatorHealthCheck` documents "Liveness is always UP", but `call()` invokes `resolver.observedIssuerConfigs()` → `ObservedValidatorResolver.doResolve()`, whose `PROPERTY_CONFIGURED` branch calls `producerHandle.get()`, instantiating `TokenValidatorProducer`. If the populated namespace is invalid (orphaned `dpop.*` property, missing `issuer-identifier`, bad JWKS config), `@PostConstruct init()` throws; a `NOT_CONFIGURED` resolution is never memoized for this case, so the exception propagates from every probe. SmallRye Health reports a throwing check as DOWN — and for a *liveness* probe, Kubernetes then restarts the pod endlessly for a configuration error a restart cannot fix. Readiness DOWN would be correct fail-closed behavior; liveness DOWN contradicts both the Javadoc and the health-checks documentation.
+
+Mitigating interplay noted by the verification pass: the restart loop can only occur in builds where the health check is actually *discovered* — per Q-2, default/dev builds may not register it at all. Q-2 and Q-4 should be read (and fixed) together.
 
 [#Q-5]
 === Q-5: Client `TokenStore`/`RefreshScheduler` "replaceable bean" claim requires `@DefaultBean`, which is not used
@@ -92,7 +94,7 @@ The producer Javadoc says a relying party "replaces the `TokenStore` bean with i
 |===
 |Severity |minor
 |Confidence |medium
-|Location |`config/JweDecryptionConfigResolver.java:76-79, 174-175`; contrast `config/IssuerConfigResolver.java:424-440`
+|Location |`jwe/JweDecryptionConfigResolver.java:76-79, 174-175`; contrast `config/IssuerConfigResolver.java:424-440`
 |===
 
 Two edges: (a) a configured `sheriff.token.jwe.default-key-id` that matches no loaded kid silently falls back to the first loaded key — a typo'd default kid silently changes which key decrypts kid-less JWEs; (b) if only ancillary JWE properties are set (`default-key-id`, `key-management-algorithms`, `decryption-key-id`) with no key source, JWE is silently disabled — unlike the analogous orphaned-DPoP check, which fails loudly.
@@ -127,7 +129,7 @@ The provider registration uses the RESTEasy Classic SPI, and the runtime POM dep
 [cols="1,4"]
 |===
 |Severity |info
-|Confidence |low (not verified against the exact SmallRye version)
+|Confidence |low (not verified against the exact SmallRye version) — verification verdict: PARTIALLY CONFIRMED (the prefix-scan mechanism is confirmed; the env-mapping consequence remains statically unverifiable)
 |Location |`config/ConfigValueParser.java:70-82`
 |===
 
