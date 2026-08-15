@@ -24,6 +24,12 @@ This report set is the outcome of a full-repository quality review covering *all
 
 No repository code or documentation was modified by this review; the only addition is this `doc/quality-report/` directory.
 
+== Using This Report
+
+*Finding IDs and remediation.* Every finding carries a stable ID (`V-n` validation code, `C-n` client code, `Q-n` Quarkus/benchmarking/build, `TV-n`/`TC-n` tests, `D-n` AsciiDoc, `J-n` Javadoc). When creating follow-up issues, reference the ID (e.g. "Fix V-2: enforce maxTokenAgeSeconds on cache hits") so the issue links back to the full evidence, failure scenario, and verification verdict. Related findings are cross-referenced between reports (e.g. V-1 ↔ the ECDH-ES test gap; C-7 ↔ TC-5) — a fix for one should check its cross-references. The per-report gap lists in the xref:test-quality-review.adoc[test report] are written so each entry can become one test-authoring task.
+
+*Snapshot semantics and staleness.* This report set is a *point-in-time snapshot of revision `d6b927c`* — it is not maintained continuously, and cited line numbers are only guaranteed against that revision. As findings are fixed, the recommended process is to reference the finding ID in the fixing PR rather than editing these reports; once a substantial portion of the findings is resolved, either re-run the review against the new revision (replacing this directory wholesale, updating the revision ID in every report header) or delete the directory in favor of the issue tracker. Partially editing individual findings in place is discouraged — it would invalidate the adversarial-verification verdicts, which apply to the report text as verified.
+
 == Executive Summary
 
 *Headline: no fail-open token-acceptance path was found anywhere.* The validation pipeline and the OAuth client are consistently fail-closed: every error path in token validation throws a typed exception; every ambiguous condition in the client aborts the flow. The adversarial test tiers on both sides are genuine — they drive production entry points with hand-crafted attack inputs and assert exact rejection outcomes. The documentation set has zero broken links across 77 AsciiDoc files, and its specification layer matches the code to an unusual degree.
