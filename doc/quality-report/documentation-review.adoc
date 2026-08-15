@@ -18,7 +18,7 @@ The weaknesses are concentrated: the *entry-point* documents (root `README.md`, 
 == Findings
 
 [#D-1]
-=== D-1: Quick-start configuration examples omit the mandatory `enabled=true` — the documented minimal setup fails at startup
+=== D-1: Quick-start configuration examples omit the mandatory `enabled=true` — the documented minimal setup fails at first use
 
 [cols="1,4"]
 |===

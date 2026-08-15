@@ -32,13 +32,13 @@ No repository code or documentation was modified by this review; the only additi
 
 == Executive Summary
 
-*Headline: no fail-open token-acceptance path was found anywhere.* The validation pipeline and the OAuth client are consistently fail-closed: every error path in token validation throws a typed exception; every ambiguous condition in the client aborts the flow. The adversarial test tiers on both sides are genuine — they drive production entry points with hand-crafted attack inputs and assert exact rejection outcomes. The documentation set has zero broken links across 77 AsciiDoc files, and its specification layer matches the code to an unusual degree.
+*Headline: no fail-open path was found in cryptographic token validation* — signature verification, algorithm enforcement, issuer/audience/expiry claim checks, JWKS handling, and JWE all reject on every error path with a typed exception, and every ambiguous condition in the OAuth client aborts the flow. The one *policy* control that does fail open over time is `maxTokenAgeSeconds`, which the default-enabled access-token cache bypasses on cache hits (xref:code-review-validation.adoc#V-2[V-2]). The adversarial test tiers on both sides are genuine — they drive production entry points with hand-crafted attack inputs and assert exact rejection outcomes. The documentation set has zero broken links across 77 AsciiDoc files, and its specification layer matches the code to an unusual degree.
 
 That said, the review found real defects. The most important, by theme:
 
 === Where the claimed posture and reality diverge (the "hidden trap" question)
 
-* *`maxTokenAgeSeconds` is silently bypassed by the default-enabled access-token cache* — the one claim-check that fails open over time (xref:code-review-validation.adoc#V-2[V-2]).
+* *`maxTokenAgeSeconds` is silently bypassed by the default-enabled access-token cache* — the one configured claim-check that fails open over time; see the narrowed headline above (xref:code-review-validation.adoc#V-2[V-2]).
 * *One advertised feature is non-functional end-to-end*: ECDH-ES JWE tokens are rejected at the parser before decryption is ever attempted, and the unit tests bypass the production parser so nothing noticed (xref:code-review-validation.adoc#V-1[V-1]).
 * *"Fails at application startup" is documented but not implemented* in the Quarkus extension — invalid config surfaces at first request and can put the *liveness* probe into a restart loop (xref:code-review-quarkus-benchmarking.adoc#Q-3[Q-3], xref:code-review-quarkus-benchmarking.adoc#Q-4[Q-4]).
 * *Health/status can misrepresent reality in both directions* in the JWKS loader: an issuer that fails its first load can never recover (status frozen), while a loader with zero usable keys reports `OK` (xref:code-review-validation.adoc#V-3[V-3], xref:code-review-validation.adoc#V-4[V-4], xref:code-review-validation.adoc#V-8[V-8]).
@@ -47,11 +47,11 @@ That said, the review found real defects. The most important, by theme:
 
 === Test-suite reality check
 
-The suites are overwhelmingly real — but three Keycloak integration tests pass for the wrong reason (revocation, rotation, logout: xref:test-quality-review.adoc#TC-1[TC-1]–TC-3), a unit test named "algorithm confusion" tests something else (xref:test-quality-review.adoc#TV-1[TV-1]), the empty-`aud`-array security fork has zero tests (xref:test-quality-review.adoc#TV-2[TV-2]), and two documented caller contracts (state single-use, family-eviction replay) have neither enforcing code nor tests (TC-5, TC-6). Generator usage is consistent and correct where variation matters; the fixed alg/kid "generators" are documented as intentional but give a false impression of variation (TV-7).
+The suites are overwhelmingly real — but three Keycloak integration tests pass for the wrong reason (revocation, rotation, logout: xref:test-quality-review.adoc#TC-1[TC-1]–TC-3), a unit test named "algorithm confusion" tests something else (xref:test-quality-review.adoc#TV-1[TV-1]), the empty-`aud`-array security fork has zero tests (xref:test-quality-review.adoc#TV-2[TV-2]), and two related gaps exist: the state single-use contract has neither enforcing code nor tests (TC-5), and while the family-eviction LRU cap *is* implemented and its mechanics tested, the security-relevant post-eviction replay case is untested (TC-6). Generator usage is consistent and correct where variation matters; the fixed alg/kid "generators" are documented as intentional but give a false impression of variation (TV-7).
 
 === Documentation
 
-The entry-point layer (root README quick start, AGENTS.md, client hub README) lags behind corrections already made in deeper documents — including a quick-start example that fails at startup as written (xref:documentation-review.adoc#D-1[D-1]) and a hub claim explicitly retracted as false by its own sub-documents (xref:documentation-review.adoc#D-2[D-2]). `doc/LogMessages.adoc` misses two Quarkus records and carries a real duplicate-identifier defect (D-3, D-4). In Javadoc, seven usage examples in older validation classes would not compile or would throw as written (xref:javadoc-review.adoc[J-1–J-7]).
+The entry-point layer (root README quick start, AGENTS.md, client hub README) lags behind corrections already made in deeper documents — including a quick-start example that does not work as written — it errors at first use/first probe (xref:documentation-review.adoc#D-1[D-1]) and a hub claim explicitly retracted as false by its own sub-documents (xref:documentation-review.adoc#D-2[D-2]). `doc/LogMessages.adoc` misses two Quarkus records and carries a real duplicate-identifier defect (D-3, D-4). In Javadoc, seven usage examples in older validation classes would not compile or would throw as written (xref:javadoc-review.adoc[J-1–J-7]).
 
 == Finding Rollup
 
