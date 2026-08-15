@@ -1,0 +1,226 @@
+= Quality Report: Documentation Review (AsciiDoc)
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: all 77 `.adoc` files under `doc/` and in module trees, plus root `README.md`, `AGENTS.md`, and `CLAUDE.md`. Reviewed for structure, accuracy against code, completeness, ambiguity, duplication/drift, and consistency. Javadoc is covered separately in xref:javadoc-review.adoc[the Javadoc report].
+
+Verification status legend: see xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+== Overall Assessment
+
+This is an unusually well-maintained documentation set. Link integrity is excellent — a full scan found *zero broken xref/link file targets and zero broken anchors* across all files, including every `#COMMONS-N`/`#CLIENT-N`/`#VALIDATION-N.M`/`#T-*` anchor and every `link:` code-file reference in the threat models and CVE register. Every file carries the mandated TOC header block, requirement-ID schemes are explicit about non-sequential numbering, and deep sampling shows the specification documents (commons transport/error/observability, client flows, JWE, MP-JWT, health checks, config reference) match the code to a degree rarely seen — down to class names, defaults, and test-class references.
+
+The weaknesses are concentrated: the *entry-point* documents (root `README.md`, `AGENTS.md`, `doc/client/README.adoc`, the `doc/README.adoc` hub) lag behind corrections already made in deeper documents; `doc/LogMessages.adoc` misses two production Quarkus log records and documents a real duplicate-identifier bug; and a stale "128 KB buffer" parser limit survives in two security documents. The most user-impacting defect is a quick-start configuration example that does not work as written.
+
+== Findings
+
+[#D-1]
+=== D-1: Quick-start configuration examples omit the mandatory `enabled=true` — the documented minimal setup fails at startup
+
+[cols="1,4"]
+|===
+|Severity |*major* (first-contact user experience; broken example)
+|Confidence |high
+|Location |`README.md:92-97`; `token-sheriff-validation-quarkus/README.adoc` (~108-138, "Basic Configuration" and "Multiple Issuers" YAML examples)
+|===
+
+The minimal example shows only `sheriff.token.issuers.keycloak.jwks.http.well-known-url=…`. But issuers default to *disabled*: `IssuerConfigResolver.java:169-174` (`.orElse(false); // Default to disabled — require explicit enabled=true`) and line 122 throws `IllegalStateException("No enabled issuer configurations found")`. The extension's own config reference gets it right ("Issuers must be explicitly enabled (default is disabled)", `META-INF/quarkus-config-doc.adoc:14-15`). The README examples as written produce a startup failure.
+
+[#D-2]
+=== D-2: `doc/client/README.adoc` still carries a claim other documents explicitly retracted as false ("issues no HTTP of its own")
+
+[cols="1,4"]
+|===
+|Severity |*major* (hub-level drift contradicting corrected deeper docs)
+|Confidence |high
+|Location |`doc/client/README.adoc:19-20`; also `token-sheriff-client/README.adoc` (~55), `client/package-info.java:29`, `doc/commons/README.adoc:22-24`, `doc/README.adoc:30`
+|===
+
+The client hub states "The engine owns two aspects and delegates the rest — it issues no HTTP of its own". This exact claim is explicitly retracted elsewhere: `doc/client/requirements.adoc:66` ("It is *not* true that the client 'issues no HTTP of its own.'") and `doc/client/architecture.adoc:138-141` ("an earlier revision claimed the engine 'issues no HTTP of its own.' That claim was false and is corrected here"). The code confirms the retraction: `client/internal/BackChannelHttp.java` drives `java.net.http.HttpClient` directly.
+
+The same stale framing survives in `token-sheriff-client/README.adoc` ("outbound bytes travel through the commons transport base layer" — the client imports only `ParserConfig` from that package), in `doc/commons/README.adoc` ("Transport … *all* outbound IdP HTTP (discovery, JWKS, token, userinfo, revocation, introspection, end-session, PAR)"), and in the hub `doc/README.adoc`. The corrected framing (commons owns discovery + JWKS; the client owns its own back channel) lives in `doc/commons/requirements.adoc` COMMONS-1, `doc/commons/architecture.adoc:39-41`, `doc/commons/specification/transport.adoc:17-19`, and `doc/client/threat-model.adoc:39-43`. Classic multi-file drift: the correction was applied to the spec layer but not to the hub/README layer above it.
+
+[#D-3]
+=== D-3: `doc/LogMessages.adoc` is missing two production Quarkus log records
+
+[cols="1,4"]
+|===
+|Severity |*major* (violates the "all log messages documented" contract)
+|Confidence |high
+|Location |`doc/LogMessages.adoc:147`; `TokenSheriffQuarkusLogMessages.java:185-189, 223-225`
+|===
+
+The doc says "Quarkus INFO Level (001-024…)" and lists WARN only 100-103 — but the code defines identifier 25 (`OBSERVED_VALIDATOR_RESOLUTION`, used at `ObservedValidatorResolver.java:241`) and identifier 104 ("Multiple external TokenValidator beans found (%s)…"). AGENTS.md mandates "All log messages must be documented in doc/LogMessages.adoc". All validation, transport, and client entries otherwise match the code exactly (a full template diff was performed).
+
+[#D-4]
+=== D-4: Duplicate log identifier `TokenSheriff-168` — acknowledged in the doc but unresolved
+
+[cols="1,4"]
+|===
+|Severity |*major* (breaks the registry's unique-identifier promise)
+|Confidence |high
+|Location |`doc/LogMessages.adoc:124-125`; `TransportLogMessages.java:90`; `JWTValidationLogMessages.java:509`
+|===
+
+Two different messages share `TokenSheriff-168` (SSRF egress guard vs duplicate JWKS `kid`). The doc lists both with a parenthetical acknowledgment instead of a resolution. Cross-reference: xref:code-review-validation.adoc#V-14[V-14] (the code-side fix is to assign the next free identifier).
+
+[#D-5]
+=== D-5: `AGENTS.md` is stale on versions, project version, root README name, and module list
+
+[cols="1,4"]
+|===
+|Severity |*major* (the primary AI/developer guidance document misleads)
+|Confidence |high
+|Location |`AGENTS.md:8-17, 146, 160, 185-194`; `pom.xml:12, 45`; `.mvn/wrapper/maven-wrapper.properties`
+|===
+
+* "Maven 3.9.6" → wrapper is 3.9.16; "Quarkus 3.34.0" → `version.quarkus` is 3.38.2.
+* "PRE-1.0 (current version: 1.0.0-SNAPSHOT)" → `pom.xml` says `0.9.5-SNAPSHOT`.
+* Key documents list names "`README.adoc` - Project overview" → the root file is `README.md`; no root `README.adoc` exists.
+* The project-structure list omits `token-sheriff-client/`; a machine-specific path (`/Users/oliver/git/cui-llm-rules/...`) is referenced; only one of the three skills in `.claude/skills/` is listed.
+* Related: `CLAUDE.md` refers to "`agents.md` (hardlinked to `AGENTS.md`)" — only `AGENTS.md` exists.
+
+[#D-6]
+=== D-6: Stale "buffer size (128 KB)" parser limit in two security documents
+
+[cols="1,4"]
+|===
+|Severity |*major* (security documents describing a removed mechanism)
+|Confidence |high
+|Location |`doc/validation/security-reference.adoc:51`; `doc/validation/threat-model.adoc:92, 223`; `ParserConfig.java:80-103, 204-205`
+|===
+
+Both documents claim `NonValidatingJwtParser` enforces "token size (8 KB), payload size (8 KB), string size (4 KB), buffer size (128 KB)". No 128 KB constant exists anywhere in main code; `ParserConfig` defines maxTokenSize 8 KB, maxPayloadSize 8 KB, maxStringLength 4 KB, maxNestingDepth 10, maxArraySize 1000, with DSL-JSON buffers bounded via `limitStringBuffer(maxStringLength)` and `limitDigitsBuffer(16)`. The 8/8/4 numbers are correct; "buffer 128 KB" is a leftover.
+
+[#D-7]
+=== D-7: ADR-0002 is orphaned and its status lags the implementation
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`doc/adr/0002-Observability_beans_observe_the_resolved_TokenValidator_not_the_issuer_property_namespace.adoc:20`; `doc/README.adoc:12-14`
+|===
+
+The ADR is referenced by no document (the hub lists only ADR-0001), and its status is still "Proposed" although the decision is implemented (`ObservedValidatorResolver`, and `doc/integration/health-checks.adoc` already documents the resulting behavior).
+
+[#D-8]
+=== D-8: Wrong default for `dpop.nonce-cache-ttl-seconds` in the config reference
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`META-INF/quarkus-config-doc.adoc:75`; `DpopConfig.java:58, 191-192`; `IssuerConfigResolver.java:405-409`
+|===
+
+Default listed as `300`; the actual builder default is `DEFAULT_NONCE_CACHE_TTL_SECONDS = 360` (proof max age 300 + 60 s skew), and `DpopConfig.build()` silently raises any configured TTL below `proofMaxAgeSeconds + 60` to that minimum — so even an explicit 300 becomes 360. Code is stricter than documented; the doc is wrong in both the default and the implied configurability. Cross-reference: xref:javadoc-review.adoc#J-8[J-8] (same defect in the property-key Javadoc).
+
+[#D-9]
+=== D-9: Client README document map stops at CLIENT-22; CLIENT-23 exists and is mapped to no specification
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`doc/client/README.adoc:46`; `doc/client/requirements.adoc:229-230`
+|===
+
+The README says "`CLIENT-1`–`CLIENT-22`, grouped by aspect", but `[#CLIENT-23]` (Optional per-client outbound TLS trust) exists in the requirements; the README's spec-coverage lists also leave CLIENT-23 unmapped.
+
+[#D-10]
+=== D-10: Documentation hub omissions and orphaned documents
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`doc/README.adoc`; `benchmarking/benchmarking-common/doc/LogMessages.adoc`
+|===
+
+* `doc/README.adoc` does not list `doc/validation/cve-lessons-register.adoc` (a substantial, well-maintained security document linked only from within the validation doc set), and omits ADR-0002 (D-7).
+* `benchmarking/benchmarking-common/doc/LogMessages.adoc` is referenced from nowhere and its title names a foreign module ("cui-benchmarking-common"); the module in this repo is `benchmarking-common`.
+* (`token-sheriff-validation-quarkus/src/main/resources/META-INF/jwt-validation-metrics.md` is unlinked from doc hubs but is a runtime resource consumed by benchmarking tooling — not a true orphan.)
+
+[#D-11]
+=== D-11: Standards compliance — `<<...>>` cross-references despite the xref-only rule; one blank-line-before-list violation
+
+[cols="1,4"]
+|===
+|Severity |minor (style compliance; all references resolve)
+|Confidence |high
+|Location |48 `<<...>>` references across 12 files under `doc/` (e.g. `doc/commons/requirements.adoc:83, 91, 112`; `doc/client/specification/test-strategy.adoc:104, 173, 325`; `doc/validation/cve-lessons-register.adoc:22, 54, 264`); `doc/client/requirements.adoc:387`
+|===
+
+AGENTS.md mandates `xref:` syntax (not `<<>>`), yet 48 `<<...>>` references exist; all resolve correctly, so this is style-only. One blank-line-before-list violation exists (`* Source:` immediately after a paragraph line); the rest of the corpus is compliant.
+
+[#D-12]
+=== D-12: Naming inconsistency — "TokenSheriff" vs "Token-Sheriff"
+
+[cols="1,4"]
+|===
+|Severity |minor (cosmetic but pervasive)
+|Confidence |medium
+|Location |`README.md:1` and AGENTS.md say "Token-Sheriff"; `doc/README.adoc:8` says "TokenSheriff"; `doc/validation/specification/microprofile-jwt-compatibility.adoc` and parts of `doc/validation/requirements.adoc` use "TokenSheriff" throughout prose
+|===
+
+[#D-13]
+=== D-13: Stale performance-snapshot version claims
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`token-sheriff-quarkus-parent/doc/performance/jwt-validation-performance.adoc:18`
+|===
+
+States "Framework: Quarkus 3.34.0" with no at-recording-time caveat (the POM is at 3.38.2). Contrast `benchmarking/doc/Analysis-03.2026-JFR-Profiling.adoc:12`, which handles this correctly ("version at recording time; project has since upgraded").
+
+[#D-14]
+=== D-14: Introspection described as an authenticated endpoint, but no introspection client exists
+
+[cols="1,4"]
+|===
+|Severity |info (borderline aspirational documentation)
+|Confidence |medium
+|Location |`doc/client/threat-model.adoc:34`; `doc/client/requirements.adoc:113`; `doc/client/specification/retrieval-flow.adoc:94`
+|===
+
+The documents say the engine authenticates to the introspection endpoint. The auth machinery is endpoint-generic and `ProviderMetadata` parses `introspection_endpoint`, but no `IntrospectionClient` exists (unlike Token/PAR/UserInfo/Revocation clients). Reads as capability-of-auth-methods rather than an implemented flow.
+
+[#D-15]
+=== D-15: Completeness — `token-sheriff-client-quarkus` (+ `-deployment`) have no READMEs; trivial naming nit
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |high
+|Location |Root `README.md:204`, `doc/README.adoc:98`, `token-sheriff-quarkus-parent/README.adoc:14`; `doc/validation/architecture.adoc:89`, `security-reference.adoc:46`, `threat-model.adoc:45`
+|===
+
+* The client extension modules are the only modules without `README.adoc` files; all three referencing documents describe them as plain text (no link) as a result.
+* Three validation docs say adapters come "from cui-http-client"; the dependency artifact is `cui-http` (package `de.cuioss.http.client.*` explains the shorthand).
+
+== Broken Links and Orphans (verified)
+
+*Broken links: none.* A full scan of all doc files (`xref:`/`link:` targets in AsciiDoc, `](...)` in README.md) found zero broken file targets and zero broken anchor targets.
+
+*Orphaned documents* (referenced by no other document):
+
+* `doc/adr/0002-Observability_beans_observe_the_resolved_TokenValidator_not_the_issuer_property_namespace.adoc` (D-7)
+* `benchmarking/benchmarking-common/doc/LogMessages.adoc` (D-10)
+
+== Areas Verified Accurate (evidence)
+
+* *LogMessages.adoc validation + client + transport sections*: programmatic diff of every `identifier()`/`template()` pair in `JWTValidationLogMessages`, `TransportLogMessages`, `ClientLogMessages` against the doc tables — exact match (IDs, templates, and gaps consistent on both sides; prefixes `TokenSheriff`, `TokenSheriff_Q`, `TokenSheriffClient` match).
+* *quarkus-config-doc.adoc defaults verified against code*: clock skew 60; JWKS refresh 600; grace period 5 min / retired sets 3; parser 8192/8192/4096; cache 1000/10 s; DPoP 300/10000; health cache 30; retry enabled + max-delay 30000; cookie name "Bearer"; issuer disabled-by-default. (One defect: the DPoP TTL default, D-8.)
+* *Validation architecture.adoc*: all seven pipeline classes, `UnvalidatedRefreshToken`, `JwksLoaderFactory`, `IssuerConfigCache`, `MeasurementType` step names, and the metric names `sheriff.token.validation.errors/success` exist as documented.
+* *security-reference.adoc*: algorithm allow/reject lists match `SignatureAlgorithmPreferences`; all eight named attack-mitigation test classes exist; `EventCategory` values match the code.
+* *Commons doc set*: all named packages and classes exist (`EgressPolicy`, `TokenSheriffException`, `InboundErrorNormalizer`, `MetricIdentifier.PREFIX = "sheriff.token"`, RFC 9457 mapper, ArchUnit boundary test, all eight MockWebServer dispatchers with adversarial modes, the `generators` classifier test-jar).
+* *Client doc set vs engine*: every class named in the client README feature list exists; the test-strategy layers are real (including docker-compose with Dex and the multi-IdP profile); the client-quarkus classes named in READMEs exist.
+* *JWE spec* (`token-decryption.adoc`): matches `JweAlgorithmPreferences` (RSA-OAEP-256/RSA-OAEP/ECDH-ES allowed, RSA1_5 rejected with Bleichenbacher rationale) and the `JweDecryptor` content-encryption set. (Note: the ECDH-ES implementation itself is non-functional end-to-end — xref:code-review-validation.adoc#V-1[V-1] — which the documentation cannot be expected to know, but after the fix the doc should be re-checked.)
+* *MP-JWT spec + README claims*: the UPN → `preferred_username` → `sub` fallback matches `JsonWebTokenAdapter`; `@BearerAuth`, `AccessTokenRequest.of(...)`, `TokenValidator.builder()`, `ClientConfiguration.builder()` are all real; JJWT is genuinely test-scope only; the native-image metadata directory ships as documented.
+* *Health-checks doc*: check names, `@Readiness`/`@Liveness` placement, and the "observing external validator" degradation all match the code (subject to the registration caveat in xref:code-review-quarkus-benchmarking.adoc#Q-2[Q-2]).

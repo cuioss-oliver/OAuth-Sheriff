@@ -1,0 +1,140 @@
+= Quality Report: Code Review — token-sheriff-client
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: all production code of `token-sheriff-client` (src/main/java) — OAuth/OIDC flows (authorization code + PKCE, PAR, client credentials, refresh), callback handling, state/nonce, mix-up defense, step-up, client authentication, token lifecycle (store, rotation reuse detection, family eviction, revocation), DPoP proof generation, discovery, logout, and internal helpers.
+
+Verification status legend: see xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+== Overall Assessment
+
+This is an unusually disciplined OAuth/OIDC client implementation: PKCE is S256-only with no plain fallback, state and nonce are 256-bit `SecureRandom` values compared in constant time, the nonce check is mandatory (absent nonce = reject), RFC 9207 `iss` is checked before code redemption with the omit-`iss` bypass closed when advertised, redirect handling uses `form_post` to keep codes out of URLs, the post-logout redirect is exact-match allow-listed, secrets are systematically excluded from `toString()`, and all back-channel responses are size-bounded during the read. *No path was found where an ambiguous or error condition lets a flow proceed (no fail-open).*
+
+The one substantive defect is in the refresh-token rotation-family bookkeeping, where a legitimate new grant stored into an existing session self-classifies as token reuse and destroys the session — a fail-closed direction, but a real availability/correctness bug that also revokes a valid grant at the authorization server. The remaining findings are consistency gaps and hardening edges.
+
+== Findings
+
+[#C-1]
+=== C-1: Rotation family desynchronizes from the store on a legitimate new grant — false reuse detection destroys the session and revokes a valid refresh token
+
+[cols="1,4"]
+|===
+|Severity |*major* (self-inflicted DoS; reuse signal becomes untrustworthy)
+|Confidence |high
+|Location |`client/lifecycle/TokenLifecycleManager.java:156-162, 219-228, 313-322`; `client/lifecycle/RefreshTokenFamily.java:117-127`
+|===
+
+`store(sessionId, token)` seeds the rotation family with `families.computeIfAbsent(sessionId, ...)` — an existing family is left untouched when a *newer* bundle is stored. But storing a newer bundle is a normal event: a re-login into the same session, or completing the module's own step-up flow (`StepUpHandler` → new `authorization_code` exchange → the RP stores the new bundle for the same session). The family then still holds the old grant's refresh token as current.
+
+On the next `refresh()`, `doRefresh` presents the stored (new) token B, the AS rotates it to C, and `family.rotate(presentedRefreshToken, ...)` → `RefreshTokenFamily.assertRedeemable` sees `currentToken (A) != presented (B)`, permanently revokes the family; `revokeReusedFamily` then revokes B at the AS (on most ASes this kills the whole grant, orphaning the just-issued C), clears the store, and rethrows "reuse detected".
+
+Failure scenario: user logs in (family seeded with A), performs a step-up re-auth in the same session (store called with B), next proactive refresh → forced logout, valid grant revoked at the AS, false reuse alarm in the logs. The same desynchronization arises when the sender-constrained path uses the public `applyRefresh(...)`, which updates the stored refresh token but never advances the family. The fail direction is closed, but this is a self-inflicted denial of service, and it erodes trust in the reuse-detection signal for monitoring.
+
+[#C-2]
+=== C-2: Refresh path trusts the raw `expires_in` with no plausibility bound; an overflow lands in the family/store divergence window
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`client/flow/RefreshFlow.java:149-150`; `client/lifecycle/TokenLifecycleManager.java:325-327`; contrast `client/token/TokenResponse.java:56, 132-137`
+|===
+
+`TokenResponse.getExpiresInSeconds()` deliberately rejects non-positive and absurd values (capped by `MAX_PLAUSIBLE_LIFETIME_SECONDS`, "so an absurd value cannot make a token effectively immortal") — but `RefreshFlow.refresh` returns the *raw* `expiresIn` field, and `TokenLifecycleManager.doRefresh` consumes it unbounded via `Instant.now().plusSeconds(...)`.
+
+Two consequences: (a) an AS returning `expires_in: 999999999999` makes the stored token effectively immortal (`RefreshScheduler.needsRefresh` / `StoredToken.isExpired` never fire) — exactly what `TokenResponse` claims to prevent; (b) a value beyond `Instant.MAX` makes `plusSeconds` throw `DateTimeException` *after* `family.rotate(...)` has advanced the family but *before* `applyRefresh` writes the store — the next refresh then presents the now-superseded stored token and self-classifies as reuse (C-1's blast radius). The fix is one line: route through the existing normalized accessor.
+
+[#C-3]
+=== C-3: DPoP binding is not verified at issuance — `token_type` and `cnf.jkt` unchecked when a sender constraint was presented
+
+[cols="1,4"]
+|===
+|Severity |minor (false sense of sender-constraint; asymmetric with the refresh path)
+|Confidence |high
+|Location |`client/flow/TokenEndpointClient.java:120-146`; `client/token/TokenResponse.java:109-113`; `client/flow/AuthorizationCodeFlow.java:214`; `client/dpop/ConstraintBinding.java:29-31`
+|===
+
+`TokenEndpointClient.requestToken` accepts a `senderConstraint`, but the response check accepts either recognized `token_type` (`Bearer` or `DPoP`) regardless of what was requested, and `AuthorizationCodeFlow.exchange` validates the access token with no confirmation-key expectation (no `cnf` handed to the validation pipeline). `ConstraintBinding`'s Javadoc says match-verification "is inherited from the validation pipeline … and is not duplicated in the client", but no expected `jkt` is ever passed to that pipeline from these call sites.
+
+Failure scenario: a misconfigured or DPoP-ignoring AS returns `token_type: Bearer` with no `cnf`; the client accepts it, and the RP believes it holds a proof-bound token. Contrast: the *refresh* path fails a binding downgrade closed (`StoredToken.refreshed`, `StoredToken.java:143-147`). Issuance should be symmetric: when `senderConstraint.method() == DPOP`, require `token_type: DPoP` (RFC 9449 §5) and confirm `cnf.jkt == generator.jkt()`.
+
+[#C-4]
+=== C-4: `EndSessionFlow` performs no TLS-scheme check on the end-session endpoint, unlike the authorization endpoint
+
+[cols="1,4"]
+|===
+|Severity |minor (ID token in a potentially cleartext front-channel URL)
+|Confidence |high
+|Location |`client/logout/EndSessionFlow.java:82-95`; contrast `client/flow/AuthorizationRequestBuilder.java:124-144`
+|===
+
+`AuthorizationRequestBuilder` refuses a non-`https` front-channel endpoint (`enforceEndpointScheme`). `EndSessionFlow.buildLogoutRedirect` builds the other front-channel redirect — carrying the full ID token as `id_token_hint` — straight from the discovery-advertised `end_session_endpoint` with no scheme or well-formedness check. A discovery document advertising `http://…/logout` (or a non-HTTP scheme) is accepted verbatim, sending the ID token in a cleartext URL (browser history, proxy logs, Referer). The `'?'` detection also mis-appends when the endpoint carries a fragment. The same `enforceEndpointScheme` policy should apply here.
+
+[#C-5]
+=== C-5: `CallbackParameters.toString()` emits raw attacker-controlled fields, contradicting its own log-safety contract
+
+[cols="1,4"]
+|===
+|Severity |minor (CWE-117 log forging via a documented-as-safe API)
+|Confidence |medium
+|Location |`client/flow/CallbackParameters.java:132-145`
+|===
+
+The Javadoc sells `toString()` as safe for "a log statement, an exception message, or a debugger dump", and `code`/`state` are indeed redacted — but `error`, `errorDescription`, and `issuer` are fully attacker-controlled callback parameters printed unsanitized. An attacker calling the RP callback with `error_description=x%0d%0aWARN forged-entry…` gets a forged log line into any RP that logs the object as the Javadoc invites — the exact vector `LogSanitizer` exists to stop, and which `IssValidator.java:75` carefully applies to the same `iss` value. The three fields should be routed through `LogSanitizer.sanitize`.
+
+[#C-6]
+=== C-6: Error callbacks are processed before the `state` check
+
+[cols="1,4"]
+|===
+|Severity |minor (CSRF-driven flow disruption; fail direction closed)
+|Confidence |high
+|Location |`client/flow/CallbackHandler.java:60-68`
+|===
+
+`CallbackHandler.handle` throws the normalized error before validating `state`. OAuth 2.0 Security BCP guidance is to bind the response to the request (state) before acting on any of it, error included. As written, an unauthenticated cross-site request carrying only `error=access_denied` is accepted as this flow's outcome, surfacing attacker-chosen (sanitized) error text to the application's error handling without proof it belongs to the pending flow. The flow aborts either way, so the impact is limited; swapping the two checks removes it.
+
+[#C-7]
+=== C-7: State/nonce single-use is a documented caller contract, not enforced in code
+
+[cols="1,4"]
+|===
+|Severity |info (documented design decision with a real residual risk)
+|Confidence |high
+|Location |`client/flow/FlowContext.java:42-48`
+|===
+
+The "One-time-use discard contract (L7)" Javadoc states the type carries no consumed flag and the invariant "is enforced by the caller's discard". `CallbackHandler` and `AuthorizationCodeFlow.exchange` will re-validate the same context against a second callback: a replayed callback with the correct state would be accepted twice. No session-store implementation exists in `token-sheriff-client-quarkus` to make the discard concrete, and no test covers the replay case (see xref:test-quality-review.adoc[Test Quality Report]). The protection lives entirely in the RP's session-store discipline — reviewers auditing "state single-use enforcement" should know this.
+
+[#C-8]
+=== C-8: Remaining hardening observations
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |as noted
+|===
+
+* *`LogSanitizer` gap — non-ASCII line separators pass through* (medium): `LogSanitizer.java:69-83` escapes `\r`, `\n`, `\t`, `c < 0x20`, and `0x7F`, but U+0085 (NEL) and U+2028/U+2029 pass verbatim; some log pipelines render these as line breaks, re-enabling a narrower forgery channel. Same pattern in the commons `InboundErrorNormalizer`. Low practical exploitability on typical appenders.
+* *Bounded-LRU eviction weakens rotation-reuse and `jti` reuse detection* (high): `TokenLifecycleManager.MAX_TRACKED_FAMILIES = 10_000` and `DpopProofGenerator.MAX_TRACKED_JTIS = 10_000` — a party able to churn 10k sessions/proofs evicts a live entry, after which a superseded-token presentation or duplicate `jti` is reseeded/untracked rather than detected. Deliberate memory-leak defenses, documented; the trade-off is acceptable but should be understood as "reuse detection within a most-recent window".
+* *PAR is half-integrated* (medium): `ParClient` pushes parameters and returns the `request_uri`, but nothing composes the corresponding front-channel redirect; `AuthorizationRequestBuilder.build` always emits the full-parameter URL, no flow calls `ParClient`, and `ParResponse.expiresIn` is consumed by nobody. An RP wiring PAR must hand-roll the redirect, losing the hardening the builder centralizes.
+* *Step-up freshness check has no skew tolerance; direct `Instant.now()` throughout* (medium): `StepUpResultVerifier.java:99-104` — a future `auth_time` yields a negative age and passes (harmless); a slightly backward-skewed client rejects fresh step-ups (availability). More broadly, `Instant.now()` is called directly in `TokenLifecycleManager`, `PrivateKeyJwtAuth`, and `DpopProofGenerator` — no injectable clock, so skew policy cannot be tuned and time-dependent logic is untestable without real waiting.
+
+== Areas Verified Solid
+
+* *PKCE*: S256-only, 32-byte `SecureRandom` verifier, `plain` structurally impossible; the flow refuses to start unless the AS advertises S256 (`PkceChallenge.java:40-66`, `AuthorizationRequestBuilder.java:92-97`). The verifier travels only in the back-channel form body.
+* *State and nonce*: 32-byte `SecureRandom` each, constant-time comparison, missing state or nonce rejected — no "skip if absent" (`FlowContext.java:157-161`, `CallbackHandler.java:74-80`, `IdTokenValidationBridge.java:79-84, 187-193`).
+* *Mix-up defense*: `iss` checked constant-time after state and before code redemption; absence rejected when the AS advertises RFC 9207 support; the discovery document issuer must equal the configured issuer (`AuthorizationCodeFlow.java:189-194`, `IssValidator.java:59-79`, `DiscoveryResolver.java:197-211`).
+* *Validation-bridge integration is real and complete*: every retrieved access token and ID token goes through `TokenValidator.createAccessToken`/`createIdToken` of the validation module before use; the code-flow exchange additionally exercises the `at_hash` overload binding ID token to access token (fails closed on a present-but-wrong `at_hash`; absent `at_hash` correctly skipped per OIDC Core), and requires an ID token on the code exchange. Refreshed ID tokens get pipeline validation plus OIDC Core §12.2 `iss`/`sub` consistency checks *before* the family advances (`TokenLifecycleManager.java:308-311, 354-378`).
+* *Callback parsing*: duplicate-parameter injection rejected fail-closed; the `of(Map)` bypass is explicitly documented; `code`/`state` redacted in `toString` (`CallbackParameters.java:68-84`).
+* *Token-response parsing*: missing `access_token` and missing/unrecognized `token_type` both fail closed; AS-controlled fragments sanitized before exception/log (`TokenEndpointClient.java:196-226`).
+* *Logout open-redirect*: exact whole-string allow-list match, no normalization/prefix/wildcard; post-logout state verified constant-time and required (`PostLogoutRedirectValidator.java:80-93`, `EndSessionFlow.java:113-120`).
+* *Client authentication*: the selector prefers the strongest advertised method, fails closed when nothing overlaps, never silently selects unimplementable `tls_client_auth` (`MtlsClientAuth` fails at construction rather than sending unauthenticated requests); the RFC 8414 basic-default applies only when metadata is absent; `client_secret_basic` correctly form-encodes credentials per RFC 6749 Appendix B; secrets only ever in headers/body and excluded from Lombok `toString` (`ClientAuthenticationSelector.java:61-102`, `ClientConfiguration.java:91-93`).
+* *DPoP proof generation*: full P-256 domain-parameter check defeats curve confusion; fixed-width EC coordinate encoding; P1363 ECDSA output; a single JWK feeds both the `jwk` header and `jkt`; bounded `jti` reuse refusal; `htu` query/fragment stripping per RFC 9449 §4.2; one-shot `use_dpop_nonce` retry only for DPoP (`DpopProofGenerator.java:203-296, 328-357`).
+* *Concurrency*: per-session single-flight refresh with correct exceptional propagation; atomic `computeIfPresent` store update closes the refresh-after-logout resurrection race; atomic take-and-clear logout (`TokenLifecycleManager.java:276-292, 380-390`, `InMemoryTokenStore.java:57-63`).
+* *Transport posture*: shared egress validation, TLS enforcement, per-client `SSLContext`, scheme-keyed client cache preventing trust-material bleed, streaming size bound with cancel-on-overflow (`BackChannelHttp.java:126-199`, `BoundedContentBodyHandler.java:115-133`).
+* *Step-up verification*: `acr`/`auth_time` asserted against the challenge fail-closed, including the empty-constraint edge; the challenge parser rejects duplicate auth-params and splits quote-aware (`StepUpResultVerifier.java:68-105`, `StepUpChallengeParser.java:98-147`).
+* *Userinfo*: `sub` binding to the ID token constant-time and mandatory; signed (`application/jwt`) responses fail closed without a configured validator (`SubBindingValidator.java:49-62`, `UserInfoClient.java:195-221`).
