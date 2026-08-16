@@ -1,0 +1,81 @@
+= Token-Sheriff Quality Report
+:toc:
+:toclevels: 2
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+
+== Purpose and Scope
+
+This report set is the outcome of a full-repository quality review covering *all production code, all test code, and all documentation* of Token-Sheriff. The review questions, as posed:
+
+* Is the code correct? Does it cover edge cases?
+* Are there hidden traps — a false feeling of security where there is none?
+* Is the claimed security posture fully implemented (in particular: does everything fail closed)?
+* Are the tests real content tests (not "just coverage"), covering corner and edge cases, with generators used correctly and both positive and negative directions present?
+* Is the documentation sensibly structured and does it represent the current code — for both Javadoc and AsciiDoc?
+
+== Methodology
+
+. *Eight independent, parallel review passes*, each scoped to one slice of the repository (validation security core; validation support code; client module; Quarkus + benchmarking + build; validation tests; client/Quarkus tests; AsciiDoc documentation; Javadoc). Each pass was evidence-driven: every finding carries file/line locations and quoted or paraphrased code; "missing check" claims required inspecting callers first. Where behavior was in doubt, it was verified empirically (e.g. DSL-JSON parsing semantics were exercised against the module's own compiled converters).
+. *Synthesis and de-duplication* into the per-area reports listed below, with stable finding IDs (V-n, C-n, Q-n, TV-n/TC-n, D-n, J-n).
+. *Independent adversarial verification*: a fresh reviewer with no knowledge of the original passes re-examined every finding end-to-end against the code and attempted to refute it. Outcome: *80 of 82 findings CONFIRMED, 2 PARTIALLY CONFIRMED (detail corrections only: D-1, Q-9), 0 REFUTED* — including empirical reproduction of the two behavioral claims (V-1 ECDH-ES parse failure; duplicate-JSON-key semantics) against the module's compiled classes. Six detail corrections (file paths, line numbers, one softened and one strengthened formulation) were folded back into the reports. Full verdict tables: xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+No repository code or documentation was modified by this review; the only addition is this `doc/quality-report/` directory.
+
+== Using This Report
+
+*Finding IDs and remediation.* Every finding carries a stable ID (`V-n` validation code, `C-n` client code, `Q-n` Quarkus/benchmarking/build, `TV-n`/`TC-n` tests, `D-n` AsciiDoc, `J-n` Javadoc). When creating follow-up issues, reference the ID (e.g. "Fix V-2: enforce maxTokenAgeSeconds on cache hits") so the issue links back to the full evidence, failure scenario, and verification verdict. Related findings are cross-referenced between reports (e.g. V-1 ↔ the ECDH-ES test gap; C-7 ↔ TC-5) — a fix for one should check its cross-references. The per-report gap lists in the xref:test-quality-review.adoc[test report] are written so each entry can become one test-authoring task.
+
+*Snapshot semantics and staleness.* This report set is a *point-in-time snapshot of revision `d6b927c`* — it is not maintained continuously, and cited line numbers are only guaranteed against that revision. As findings are fixed, the recommended process is to reference the finding ID in the fixing PR rather than editing these reports; once a substantial portion of the findings is resolved, either re-run the review against the new revision (replacing this directory wholesale, updating the revision ID in every report header) or delete the directory in favor of the issue tracker. Partially editing individual findings in place is discouraged — it would invalidate the adversarial-verification verdicts, which apply to the report text as verified.
+
+== Executive Summary
+
+*Headline: no fail-open path was found in cryptographic token validation* — signature verification, algorithm enforcement, issuer/audience/expiry claim checks, JWKS handling, and JWE all reject on every error path with a typed exception, and every ambiguous condition in the OAuth client aborts the flow. The one *policy* control that does fail open over time is `maxTokenAgeSeconds`, which the default-enabled access-token cache bypasses on cache hits (xref:code-review-validation.adoc#V-2[V-2]). The adversarial test tiers on both sides are genuine — they drive production entry points with hand-crafted attack inputs and assert exact rejection outcomes. The documentation set has zero broken links across 77 AsciiDoc files, and its specification layer matches the code to an unusual degree.
+
+That said, the review found real defects. The most important, by theme:
+
+=== Where the claimed posture and reality diverge (the "hidden trap" question)
+
+* *`maxTokenAgeSeconds` is silently bypassed by the default-enabled access-token cache* — the one configured claim-check that fails open over time; see the narrowed headline above (xref:code-review-validation.adoc#V-2[V-2]).
+* *One advertised feature is non-functional end-to-end*: ECDH-ES JWE tokens are rejected at the parser before decryption is ever attempted, and the unit tests bypass the production parser so nothing noticed (xref:code-review-validation.adoc#V-1[V-1]).
+* *"Fails at application startup" is documented but not implemented* in the Quarkus extension — invalid config surfaces at first request and can put the *liveness* probe into a restart loop (xref:code-review-quarkus-benchmarking.adoc#Q-3[Q-3], xref:code-review-quarkus-benchmarking.adoc#Q-4[Q-4]).
+* *Health/status can misrepresent reality in both directions* in the JWKS loader: an issuer that fails its first load can never recover (status frozen), while a loader with zero usable keys reports `OK` (xref:code-review-validation.adoc#V-3[V-3], xref:code-review-validation.adoc#V-4[V-4], xref:code-review-validation.adoc#V-8[V-8]).
+* *Configuration knobs that promise more than the code does*: well-known mode silently discards user TLS/timeout/retry settings (xref:code-review-validation.adoc#V-7[V-7]); the issuer-mismatch trust gate is inactive for programmatic well-known users unless a second knob is set — and the related error text claims the opposite (xref:code-review-validation.adoc#V-6[V-6]); class-level `@BearerAuth` merging silently drops requirements under ArC (xref:code-review-quarkus-benchmarking.adoc#Q-1[Q-1]).
+* *Client-side*: the refresh-token rotation family desynchronizes on a legitimate re-login/step-up and then destroys the session as false "reuse" — fail-closed, but a self-inflicted DoS that also revokes a valid grant (xref:code-review-client.adoc#C-1[C-1]).
+
+=== Test-suite reality check
+
+The suites are overwhelmingly real — but three Keycloak integration tests pass for the wrong reason (revocation, rotation, logout: xref:test-quality-review.adoc#TC-1[TC-1]–TC-3), a unit test named "algorithm confusion" tests something else (xref:test-quality-review.adoc#TV-1[TV-1]), the empty-`aud`-array security fork has zero tests (xref:test-quality-review.adoc#TV-2[TV-2]), and two related gaps exist: the state single-use contract has neither enforcing code nor tests (TC-5), and while the family-eviction LRU cap *is* implemented and its mechanics tested, the security-relevant post-eviction replay case is untested (TC-6). Generator usage is consistent and correct where variation matters; the fixed alg/kid "generators" are documented as intentional but give a false impression of variation (TV-7).
+
+=== Documentation
+
+The entry-point layer (root README quick start, AGENTS.md, client hub README) lags behind corrections already made in deeper documents — including a quick-start example that does not work as written — it errors at first use/first probe (xref:documentation-review.adoc#D-1[D-1]) and a hub claim explicitly retracted as false by its own sub-documents (xref:documentation-review.adoc#D-2[D-2]). `doc/LogMessages.adoc` misses two Quarkus records and carries a real duplicate-identifier defect (D-3, D-4). In Javadoc, seven usage examples in older validation classes would not compile or would throw as written (xref:javadoc-review.adoc[J-1–J-7]).
+
+== Finding Rollup
+
+No finding was rated *critical* (defined here as an exploitable token-acceptance bypass).
+
+[cols="3,1,1,1,3", options="header"]
+|===
+|Report |Major |Minor |Info |IDs
+|xref:code-review-validation.adoc[Validation code] |7 |9 |1 bundle |V-1 … V-17
+|xref:code-review-client.adoc[Client code] |1 |5 |2 |C-1 … C-8
+|xref:code-review-quarkus-benchmarking.adoc[Quarkus / benchmarking / build] |5 |6 |2 |Q-1 … Q-13
+|xref:test-quality-review.adoc[Test quality] |4 |10 |3 |TV-1 … TV-8, TC-1 … TC-9
+|xref:documentation-review.adoc[AsciiDoc documentation] |6 |7 |2 |D-1 … D-15
+|xref:javadoc-review.adoc[Javadoc] |7 |4 |1 |J-1 … J-12
+|===
+
+Severity meaning: *major* = a real defect, misdocumented guarantee, or untested security fork that warrants a fix; *minor* = correctness/consistency issue with bounded impact; *info* = observation worth recording (documented trade-offs, hardening edges, cosmetics).
+
+== Reports
+
+* xref:code-review-validation.adoc[Code Review — token-sheriff-validation] (security core + support code)
+* xref:code-review-client.adoc[Code Review — token-sheriff-client]
+* xref:code-review-quarkus-benchmarking.adoc[Code Review — Quarkus modules, benchmarking, build]
+* xref:test-quality-review.adoc[Test Quality Review] (all modules)
+* xref:documentation-review.adoc[Documentation Review — AsciiDoc]
+* xref:javadoc-review.adoc[Javadoc Review]
+* xref:adversarial-verification.adoc[Adversarial Verification Report] (independent end-to-end re-check of all findings)

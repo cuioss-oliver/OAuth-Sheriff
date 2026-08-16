@@ -1,0 +1,200 @@
+= Quality Report: Code Review — Quarkus Modules, Benchmarking, Build
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: all modules under `token-sheriff-quarkus-parent/` (runtime + deployment for validation and client, integration tests), the `benchmarking/` modules, and the root/BOM/module POMs.
+
+Verification status legend: see xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+== Overall Assessment
+
+The Quarkus extension code is generally well-structured, and the recent ADR-0002 fix (commit `12073cf`) is faithfully implemented — `ObservedValidatorResolver` matches the ADR's decision text point-for-point, and health/metrics/DevUI beans degrade honestly when nothing is configured. The fail-closed posture at the request path is sound: no configuration state allows a token through unvalidated.
+
+Three structural risks stand out: (1) the documented "fails at application startup" contract is not implemented — nothing eagerly instantiates `TokenValidatorProducer`, so invalid configuration surfaces only at first use and can turn the *liveness* probe DOWN (restart loop) instead of failing deployment; (2) several runtime-module classes (health checks, both RFC 9457 exception mappers) are registered by *no* deployment build step and rely on an implicit Jandex index that the parent POM generates only in release profiles; (3) class-level `@BearerAuth` requirement merging is silently broken under ArC subclassing. The benchmarking suite is internally consistent, but the headline "concurrent load" numbers measure 100 independent validators rather than the shared singleton the extension actually deploys.
+
+== Findings
+
+[#Q-1]
+=== Q-1: Class-level `@BearerAuth` requirements are silently dropped under ArC interception
+
+[cols="1,4"]
+|===
+|Severity |*major* (documented authorization merge silently weakened)
+|Confidence |high
+|Location |`token-sheriff-validation-quarkus/.../interceptor/BearerTokenInterceptor.java:186, 199-202`; `annotation/BearerAuth.java:60-80, 141-145`
+|===
+
+The interceptor reads the class-level annotation via `ctx.getTarget().getClass().getAnnotation(BearerAuth.class)`. `@BearerAuth` is not `@Inherited`, and in Quarkus ArC an intercepted bean instance is an instance of a generated `_Subclass` — `getClass().getAnnotation()` on the subclass returns `null` for non-inherited annotations.
+
+Failure scenario: a resource with class-level `@BearerAuth(requiredRoles={"admin"})` plus method-level `@BearerAuth(requiredScopes={"admin:settings"})` — exactly the merge example documented in the annotation's Javadoc — silently loses the `admin` role requirement (weaker authorization than documented). With a class-level-only annotation, `extractMergedAuth` finds neither annotation and throws `IllegalStateException` → 500 on every call (fail-closed, but a broken feature). The unit test covering the merge (`BearerTokenInterceptorTest.java:317`) uses plain instances without ArC subclassing, so it cannot catch this; all integration-test endpoints use method-level annotations only. Fix: read the class annotation from `ctx.getMethod().getDeclaringClass()`, or mark `@BearerAuth` as `@Inherited`.
+
+[#Q-2]
+=== Q-2: Health checks and problem-JSON exception mappers are registered by no build step; discovery depends on a release-profile-only Jandex index
+
+[cols="1,4"]
+|===
+|Severity |*major* (documented features silently absent in non-release builds)
+|Confidence |medium (behavior depends on build profile; verified against the parent POM)
+|Location |`token-sheriff-validation-quarkus-deployment/.../TokenSheriffProcessor.java:154-189`; `token-sheriff-client-quarkus-deployment/.../TokenSheriffClientProcessor.java:74-79`; `ClientExceptionMapper.java:31-44`; `cui-java-parent` POM (Jandex plugin bound to release profiles)
+|===
+
+`TokenSheriffProcessor.additionalBeans()` registers producers, registries, and the interceptor — but not `TokenValidatorHealthCheck`, `JwksEndpointHealthCheck`, or `ProblemDetailExceptionMapper`. It *does* register `CustomAccessLogFilter` explicitly as a JAX-RS provider, showing the authors know extension runtime jars are not scanned by default. `TokenSheriffClientProcessor` registers only the producer; `ClientExceptionMapper` (`@Provider`) is registered nowhere — its own Javadoc states the premise: "The extension runtime jar is not part of the application's bean-discovery archive by default."
+
+The only mechanism that would make these classes discoverable is a `META-INF/jandex.idx` in the runtime jar — and the parent POM (`cui-java-parent-1.5.4`) runs the `jandex-maven-plugin` only in the `release`, `release-snapshot`, and `javadoc` profiles, not the default build.
+
+Failure scenario: in any build without those profiles (local dev, plain `./mvnw verify`, the integration-test run), `/q/health` silently lacks the `jwt-validator`/`jwks-endpoints` checks, and `TokenSheriffException`/`TransportException` render as generic 500s instead of the documented RFC 9457 documents. Nothing notices: `HealthCheckIntegrationIT` asserts only the overall `"status": "UP"`, no integration test asserts `application/problem+json`, and both mapper test classes are pure unit tests calling methods directly. Even if released artifacts work via the index, dev builds behaving differently from released builds is itself a defect. Fix: add `AdditionalBeanBuildItem` entries for the health checks and provider/`ExceptionMapperBuildItem` registration for the mappers.
+
+[#Q-3]
+=== Q-3: "Fails at application startup" is documented but not implemented — no eager initialization exists
+
+[cols="1,4"]
+|===
+|Severity |*major* (documented deployment-time guarantee absent)
+|Confidence |high
+|Location |`token-sheriff-validation-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc:78-79`; `config/IssuerConfigResolver.java:371-373`; `producer/TokenValidatorProducer.java:64-65, 104-105`
+|===
+
+The config reference states "Configuring any of them without enabling DPoP fails at application startup", and `IssuerConfigResolver`'s Javadoc says "an IllegalStateException is thrown at startup". But `TokenValidatorProducer` is a lazy `@ApplicationScoped` bean; a search for `StartupEvent`/`@Startup`/`@Observes` across `token-sheriff-quarkus-parent` returns zero matches, and no deployment build step forces eager init.
+
+An application with missing, typo'd, or invalid `sheriff.token.issuers.*` configuration starts "successfully"; the error surfaces at the first `@BearerAuth` request (500), the first health probe, or the first `@Scheduled` metrics tick (~10 s, `JwtMetricsCollector.java:183-188`). The security posture remains fail-closed — requests error rather than pass — but the documented deployment-time guarantee is absent.
+
+[#Q-4]
+=== Q-4: Populated-but-invalid config turns the liveness probe DOWN — Kubernetes restart loop, contradicting the check's own contract
+
+[cols="1,4"]
+|===
+|Severity |*major* (operational; contradicts documented liveness semantics)
+|Confidence |medium
+|Location |`health/TokenValidatorHealthCheck.java:33-36, 57-62`; `observability/ObservedValidatorResolver.java:190-196, 210-212`; `token-sheriff-quarkus-parent/doc/integration/health-checks.adoc:60-63`
+|===
+
+`TokenValidatorHealthCheck` documents "Liveness is always UP", but `call()` invokes `resolver.observedIssuerConfigs()` → `ObservedValidatorResolver.doResolve()`, whose `PROPERTY_CONFIGURED` branch calls `producerHandle.get()`, instantiating `TokenValidatorProducer`. If the populated namespace is invalid (orphaned `dpop.*` property, missing `issuer-identifier`, bad JWKS config), `@PostConstruct init()` throws; a `NOT_CONFIGURED` resolution is never memoized for this case, so the exception propagates from every probe. SmallRye Health reports a throwing check as DOWN — and for a *liveness* probe, Kubernetes then restarts the pod endlessly for a configuration error a restart cannot fix. Readiness DOWN would be correct fail-closed behavior; liveness DOWN contradicts both the Javadoc and the health-checks documentation.
+
+Mitigating interplay noted by the verification pass: the restart loop can only occur in builds where the health check is actually *discovered* — per Q-2, default/dev builds may not register it at all. Q-2 and Q-4 should be read (and fixed) together.
+
+[#Q-5]
+=== Q-5: Client `TokenStore`/`RefreshScheduler` "replaceable bean" claim requires `@DefaultBean`, which is not used
+
+[cols="1,4"]
+|===
+|Severity |minor (documented extension point does not work as described)
+|Confidence |medium
+|Location |`token-sheriff-client-quarkus/.../TokenSheriffClientProducer.java:60-62, 162-166`
+|===
+
+The producer Javadoc says a relying party "replaces the `TokenStore` bean with its own implementation", but the producer is a plain `@Produces @ApplicationScoped` method. An application defining its own `TokenStore` bean gets an ambiguous-dependency build failure in ArC, not a replacement. The Quarkus idiom for this contract is `@io.quarkus.arc.DefaultBean`. The same applies to `RefreshScheduler`.
+
+[#Q-6]
+=== Q-6: JWE config resolution has silent-fallback edges inconsistent with the DPoP fail-fast philosophy
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`jwe/JweDecryptionConfigResolver.java:76-79, 174-175`; contrast `config/IssuerConfigResolver.java:424-440`
+|===
+
+Two edges: (a) a configured `sheriff.token.jwe.default-key-id` that matches no loaded kid silently falls back to the first loaded key — a typo'd default kid silently changes which key decrypts kid-less JWEs; (b) if only ancillary JWE properties are set (`default-key-id`, `key-management-algorithms`, `decryption-key-id`) with no key source, JWE is silently disabled — unlike the analogous orphaned-DPoP check, which fails loudly.
+
+[#Q-7]
+=== Q-7: Published BOM pins `jjwt-*` with `<scope>test</scope>`
+
+[cols="1,4"]
+|===
+|Severity |minor (consumer trap)
+|Confidence |medium
+|Location |`bom/pom.xml:36-53`
+|===
+
+`dependencyManagement` entries in an importable BOM carry `<scope>test</scope>`. Any consumer importing `token-sheriff-bom` that declares `jjwt-api` without an explicit scope silently inherits test scope — the artifact goes missing at runtime. Scope in a published BOM should generally be omitted; test-only pinning belongs in the consuming module.
+
+[#Q-8]
+=== Q-8: Extension's JAX-RS integration is RESTEasy-Classic-only, undocumented
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`TokenSheriffProcessor.java:186-189` (`ResteasyJaxrsProviderBuildItem`); `token-sheriff-validation-quarkus/pom.xml:84-87`
+|===
+
+The provider registration uses the RESTEasy Classic SPI, and the runtime POM depends on optional `quarkus-resteasy`; the integration-tests application also uses Classic. Applications on Quarkus REST (the current default stack) get no `CustomAccessLogFilter` registration and, per Q-2, no exception mappers. No documentation states the Classic-only limitation.
+
+[#Q-9]
+=== Q-9: Issuer discovery via `getPropertyNames()` may miss env-var-only configuration
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |low (not verified against the exact SmallRye version) — verification verdict: PARTIALLY CONFIRMED (the prefix-scan mechanism is confirmed; the env-mapping consequence remains statically unverifiable)
+|Location |`config/ConfigValueParser.java:70-82`
+|===
+
+`discoverNameSegments` scans `config.getPropertyNames()` for dotted prefixes. Issuers configured exclusively through environment variables depend on SmallRye's env-to-dotted-name mapping; kebab-case issuer names (`my-issuer`) cannot round-trip from `MY_ISSUER`. In a Kubernetes env-only deployment, `hasEnabledIssuers` may return false and the producer throws "No issuer configurations found". Worth an integration test.
+
+[#Q-10]
+=== Q-10: "Concurrent load" benchmarks measure 100 independent validators, not the shared singleton the extension deploys
+
+[cols="1,4"]
+|===
+|Severity |*major* for benchmark validity (no runtime impact)
+|Confidence |high
+|Location |`benchmarking/benchmark-core/.../SimpleCoreValidationBenchmark.java:32, 62-67`; `SimpleErrorLoadBenchmark.java:32`; `AbstractBenchmark.java:52-68`; `benchmark-core/pom.xml:30`
+|===
+
+The benchmark state is `@State(Scope.Thread)`, and `setupBase()` creates a per-thread `MockTokenRepository` + `TokenValidator`. With `jmh.threads=100`, `measureThroughput` — documented as "token validation throughput under concurrent load … to test cache effectiveness" — aggregates 100 validators with 100 private 60-entry caches and private `SecurityEventCounter` instances. In production the Quarkus extension exposes exactly one `@ApplicationScoped` `TokenValidator` shared by all request threads, so contention on the shared access-token cache and counters is never measured, and throughput/scalability is overstated. The per-thread design is deliberate (Javadoc: "eliminate JMH threading contention") but invalidates the stated interpretation; a shared-state variant (`@State(Scope.Benchmark)`) is needed for the claim. `ConcurrencySweepRunner` is less affected (RSA verification is CPU-bound) but inherits the caveat for cache-related conclusions.
+
+[#Q-11]
+=== Q-11: Exported benchmark step-metrics are last-writer-wins across 100 threads
+
+[cols="1,4"]
+|===
+|Severity |minor (published metrics sidecar misleading; JMH scores unaffected)
+|Confidence |high
+|Location |`AbstractBenchmark.java:75-84` (`@TearDown(Level.Trial)` with `Scope.Thread` state); `LibraryMetricsExporter.java:108`
+|===
+
+With per-thread state, JMH runs trial teardown once per thread instance — 100 calls, each writing under the same key via `updateAggregatedMetrics`. The published `jwt-validation-metrics.json` percentiles and `sample_count` therefore reflect only the last thread's monitor (~1% of operations), not the whole run.
+
+[#Q-12]
+=== Q-12: Build/documentation version inconsistencies
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`AGENTS.md:8-17, 146, 160, 185-194`; `pom.xml:12, 45`; `CLAUDE.md`
+|===
+
+* AGENTS.md claims Quarkus 3.34.0 and Maven 3.9.6; the build uses `version.quarkus` 3.38.2 and wrapper Maven 3.9.16.
+* AGENTS.md claims "current version: 1.0.0-SNAPSHOT"; `pom.xml` says `0.9.5-SNAPSHOT`.
+* AGENTS.md lists a machine-specific path (`/Users/oliver/git/cui-llm-rules/...`), omits `token-sheriff-client/` from the module list, references a root `README.adoc` that does not exist (the root file is `README.md`), and lists only one of the three skills in `.claude/skills/`.
+* CLAUDE.md refers to "`agents.md` (hardlinked to `AGENTS.md`)" — only `AGENTS.md` exists in the repository.
+
+(See also the xref:documentation-review.adoc[Documentation Review] for the full documentation-side treatment.)
+
+[#Q-13]
+=== Q-13: Stale class references in benchmarking (cosmetic)
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |high
+|Location |`SimpleCoreValidationBenchmark.java:26`; `JmhBenchmarkConverterTest.java:68`; `TestDataFactory.java:109`
+|===
+
+Historical mentions of `PerformanceIndicatorBenchmark` and old package names (`de.cuioss.sheriff.token.quarkus.benchmark...`, `de.cuioss.jwt.benchmark.Test`) survive in comments and test fixtures. No functional impact — the `jmh.include` pattern matches the current `standard` package.
+
+== Areas Verified Solid
+
+* *ADR-0002 conformance*: `ObservedValidatorResolver` implements the ADR exactly — cheap config probe, `@Any Instance<TokenValidator>` enumeration excluding the producer by bean-class metadata without invoking it, ambiguity → `NOT_CONFIGURED` with a candidate-naming warning, re-resolution of `NOT_CONFIGURED`, empty issuer/parser views for foreign validators. Consumers degrade honestly (health UP + status marker, `checkedEndpoints=0`, metrics idle no-op with re-baseline, DevUI explicit "not configured").
+* *Config docs ↔ code*: every property in `META-INF/quarkus-config-doc.adoc` and `doc/**` matches a constant in `JwtPropertyKeys.java`/`ClientRuntimeConfig.java` (full cross-check, no orphans in either direction). The deliberate 30 s retry max-delay override matches the documented default.
+* *Fail-closed request path*: missing config → producer throws at injection; the interceptor fails closed on absent annotations; empty bearer → 400 per RFC 6750.
+* *Dev-mode containment*: DevUI card and JSON-RPC service are `@BuildStep(onlyIf = IsDevelopment.class)`; the DevUI runtime service is not in the production bean list.
+* *DPoP orphan-property fail-fast* and secure-by-default transport opt-ins (`allow-insecure-http`, `allow-loopback-egress`, `allowed-egress-hosts`).
+* *No-leak problem documents*: both exception mappers build responses from constants only.
+* *Version management*: single `version.quarkus` property consistently referenced; BOM import order sound; no duplicated conflicting `dependencyManagement`.
+* *Benchmark JMH plumbing*: system-property names match `BenchmarkConstants.Jmh`; warmup precedes measurement; setup work (key generation, token pools) is in `@Setup(Level.Trial)` outside timed sections; error benchmarks assert expected outcomes so error-path timings are not polluted by accidental successes.

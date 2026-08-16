@@ -1,0 +1,180 @@
+= Quality Report: Adversarial Verification
+:toc:
+:toclevels: 2
+:sectnums:
+:source-highlighter: highlight.js
+
+Verification date: 2026-08-15. Verified at revision `7867d2d` (reports as initially committed; findings reference review revision `d6b927c`).
+
+== Method
+
+Every finding in the six review reports was re-examined by an *independent adversarial verifier with a clean slate* — a fresh reviewer that had no part in producing the reports and was instructed to treat every claim as suspect and actively attempt to refute it:
+
+* Every cited file was re-read at the cited location from primary sources (quoted evidence was not trusted; line numbers were re-derived).
+* Claimed failure scenarios were traced end-to-end through callers and callees; a claimed "missing check" counted as refuted if the check exists anywhere on the path.
+* Two behavioral claims were reproduced *empirically* by compiling a probe against the module's own `target/classes` and the local `dsl-json` artifact: the object-valued `epk` parse failure (V-1) and duplicate-JSON-key last-value-wins semantics (V-17).
+* Bundle findings (V-17, C-8, Q-12, TC-9, TV-7/8, D-10/11/15, J-11/12) were verified sub-claim by sub-claim.
+
+Verdicts: *CONFIRMED* (independently reproduced), *PARTIALLY CONFIRMED* (core claim holds, a detail corrected), *REFUTED*, *UNVERIFIABLE*.
+
+== Outcome Summary
+
+[cols="2,1", options="header"]
+|===
+|Verdict |Count
+|CONFIRMED |80
+|PARTIALLY CONFIRMED |2 (D-1, Q-9)
+|REFUTED |0
+|UNVERIFIABLE |0
+|===
+
+All 82 finding IDs received a verdict; every sub-claim of every bundle was individually checked. The only externally unverifiable detail is V-15's real-world example (Azure AD JWKS documents exceeding 8 KB) — the one-knob-two-ceilings *mechanism* itself was confirmed in code.
+
+The review's headline claims — "no fail-open token-acceptance path" and "zero broken documentation links" — were consistent with everything inspected during path-by-path verification of the ~60 cited locations; no counterexample surfaced.
+
+== Verdicts per Finding
+
+=== Validation code (xref:code-review-validation.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence (verifier's own)
+|V-1 |CONFIRMED (empirically) |`JwtHeader.java:77` declares `String epk`; the generated converter (`_JwtHeader_DslJsonConverter.java:163`) reads it via `StringConverter.READER`. A compiled probe reproduced `ParsingException: Expecting '"' for string start. Found {` for a spec-compliant ECDH-ES header. `JweDecryptor.deriveCekEcdhEs` (:195) is unreachable; ECDH-ES advertised at `JweAlgorithmPreferences.java:80`; test bypass confirmed at `JweDecryptorTest.parseHeader:492-528`.
+|V-2 |CONFIRMED |Cache hit re-checks only `exp` (`AccessTokenCache.java:192`) plus DPoP/custom rules (`AccessTokenValidationPipeline.java:165-184`); `validateTokenAge` invoked only from `TokenClaimValidator.java:133`, skipped on hits; cache default-enabled (`AccessTokenCacheConfig.java:61`).
+|V-3 |CONFIRMED |`status.set(...)` only at `HttpJwksLoader.java:170,180,195,460`; refresh path never sets `OK`; re-admission requires `OK` (`IssuerConfigCache.java:204-210`); recovery test uses a stub (`IssuerConfigCacheRecoveryTest.java:48`), not `HttpJwksLoader`.
+|V-4 |CONFIRMED |Well-known failure → hard `ERROR` (:148-149, :195); `startBackgroundRefresh()` (:160-162) reached only after successful resolution; `initFuture` guard (:136-140) prevents re-init; direct mode gets `UNDEFINED` + retries (:179).
+|V-5 |CONFIRMED |`TokenValidator.close()` (:459-465) shuts only pipeline + DPoP; repo-wide grep finds no production caller of `HttpJwksLoader.close()` (:445-461); daemon threads at `HttpJwksLoaderConfig.java:711-714`.
+|V-6 |CONFIRMED |Gate runs only when `configuredIssuer != null` (`HttpJwksLoader.java:511-517`); knob mandatory only for direct mode (`HttpJwksLoaderConfig.java:720-722`); `IssuerConfig.build()` passes the config through untouched (`IssuerConfig.java:1049-1050`); misleading error text at :638-641; Quarkus propagates (`IssuerConfigResolver.java:512`). Severity note: see <<reclass,Severity flags>>.
+|V-7 |CONFIRMED |TLS/timeout setters write into `httpHandlerBuilder` (:539-598) used only in the direct branch (:690-704); well-known branch builds `WellKnownConfig` fresh with `RetryConfig.defaults()` (:675-688); JWKS handler derived from the well-known handler (:237-254 via :219-221).
+|V-8 |CONFIRMED |On HTTP success `status.set(OK)` is unconditional (:164-171) even when `updateKeys` returns without installing (:333-336).
+|V-9 |CONFIRMED |`max(clockSkewSeconds)` (`TokenValidator.java:350-353`) gates cache hits (`AccessTokenCache.java:192`).
+|V-10 |CONFIRMED |Refresh failures only WARN (:426); discovery runs once from init; adapter/URI cached for loader lifetime (:153, :252).
+|V-11 |CONFIRMED |Range check only at `TokenSignatureValidator.java:262`; DPoP path (`DpopProofValidator.java:501-516` → `SignatureVerificationUtil.java:65-79`) has none; converter encodes r=s=0 (`EcdsaSignatureFormatConverter.java:84-102`).
+|V-12 |CONFIRMED |`checkAndStore` (:334 via :303) precedes the thumbprint check (:306-313); eviction only removes out-of-window entries (`DpopReplayProtection.java:128-139`); 4 KB jti bound checks out.
+|V-13 |CONFIRMED |Zero-placeholder template (`JWTValidationLogMessages.java:68-72`) called with 2 args (`HttpJwksLoader.java:175`); two-placeholder `JSON_PARSE_FAILED` called with 1 arg in 5 places and nested `%s` in 2 (`WellKnownConfigurationConverter.java:76,82,103,109,113,131,135`).
+|V-14 |CONFIRMED |Identifier 168 in both registries, same `TokenSheriff` prefix (`TransportLogMessages.java:90`, `JWTValidationLogMessages.java:509`).
+|V-15 |CONFIRMED (mechanism) |`JwksHttpContentConverter.java:72` feeds `getMaxPayloadSize()` (8 KB default, documented per-JWT-part) into the body bound. The Azure-AD size example is external-world and was not checkable locally.
+|V-16 |CONFIRMED |`supplyAsync` at :143 precedes the CAS at :185; loser's supplier schedules a second refresh task and `refreshTask.set` (:364) overwrites; single production call site (`IssuerConfigCache.java:121`).
+|V-17 |CONFIRMED (all 8 sub-claims) |Incl. empirical duplicate-key last-value-wins. One correction applied: the `JWKS_KEYS_UPDATED` call *matches* its template ("load state: %s"); the defect is message-content usefulness (it logs `LOADING` during init), not a placeholder mismatch — the report text was adjusted accordingly.
+|===
+
+=== Client code (xref:code-review-client.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence
+|C-1 |CONFIRMED |`computeIfAbsent` seeding (`TokenLifecycleManager.java:160`); `doRefresh` presents the stored token (:301,:306); `assertRedeemable` revokes on mismatch (`client/token/RefreshTokenFamily.java:121-126`); `revokeReusedFamily` revokes at the AS and clears the store (:333-348); public `applyRefresh` (:219-228) updates the store but never the family. Path correction applied: `RefreshTokenFamily` is in `client/token/`, not `client/lifecycle/`.
+|C-2 |CONFIRMED |Raw `expiresIn` returned (`RefreshFlow.java:149-150`), consumed unbounded (:325-327) after `family.rotate` (:317) and before `applyRefresh` (:329); both consequences hold; contrast `TokenResponse.getExpiresInSeconds()` (:132-136, cap :56).
+|C-3 |CONFIRMED |Either recognized `token_type` accepted regardless of request (`TokenResponse.java:109-113`); no `cnf` expectation at `AuthorizationCodeFlow.java:212-214`; `ConstraintBinding:29-31` defers to a pipeline never given the expected `jkt`; refresh-path contrast real (`StoredToken.java:113-122`).
+|C-4 |CONFIRMED |No scheme check in `buildLogoutRedirect` (`EndSessionFlow.java:82-95`); `'?'` append (:94) mis-handles fragments; `enforceEndpointScheme` exists only in `AuthorizationRequestBuilder.java:91,124`.
+|C-5 |CONFIRMED |Raw `error`/`errorDescription`/`issuer` in `toString()` (`CallbackParameters.java:141-145`) under a log-safety Javadoc (:132-136).
+|C-6 |CONFIRMED |`hasError()` throw (:60-64) precedes the state check (:65-68) in `CallbackHandler`.
+|C-7 |CONFIRMED |L7 contract documented (`FlowContext.java:42-48`); no consumed flag; no `FlowContext` store in client-quarkus main; no replay test among `CallbackHandlerTest`'s 14 tests.
+|C-8 |CONFIRMED (all 4 sub-claims) |`LogSanitizer.java:71-81` misses U+0085/U+2028/U+2029; both 10k LRU caps verified; `ParClient` has no production caller and `ParResponse.expiresIn` no consumer; step-up uses direct `Instant.now()` with no skew (`StepUpResultVerifier.java:100-104`).
+|===
+
+=== Quarkus / benchmarking / build (xref:code-review-quarkus-benchmarking.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence
+|Q-1 |CONFIRMED |`getTarget().getClass().getAnnotation` (`BearerTokenInterceptor.java:186`); no `@Inherited` on `@BearerAuth` (:141-143); merge example documented (:55-80); unit test uses plain instances (`BearerTokenInterceptorTest.java:215`); all IT endpoints method-level (`JwtValidationEndpoint.java:241-354`). Verified statically against standard ArC `_Subclass` semantics (not executed).
+|Q-2 |CONFIRMED |Neither health checks nor `ProblemDetailExceptionMapper` in `additionalBeans()` (`TokenSheriffProcessor.java:153-178`) while `CustomAccessLogFilter` is explicitly registered (:186-189); client processor registers only the producer; no `beans.xml`/`jandex.idx` in runtime resources; `cui-java-parent-1.5.4` binds Jandex only in release/javadoc profiles; `HealthCheckIntegrationIT` asserts only overall UP; no `problem+json` IT assertion exists.
+|Q-3 |CONFIRMED |Startup-failure claims at `quarkus-config-doc.adoc:79` and `IssuerConfigResolver.java:371`; zero `StartupEvent`/`@Startup`/`@Observes` matches in main code; lazy producer (:64,:104); metrics tick at `JwtMetricsCollector.java:183`.
+|Q-4 |CONFIRMED |`@Liveness` (:41) + "always UP" Javadoc (:34); `call()` → `doResolve` → `producerHandle.get()` (`ObservedValidatorResolver.java:210-212`); init throw propagates un-memoized (:194-195). Corrections applied: doc path is `token-sheriff-quarkus-parent/doc/integration/health-checks.adoc`; and the restart loop can only occur in builds where the check is actually discovered — in default/dev builds Q-2 leaves it unregistered, so Q-2 and Q-4 must be read together.
+|Q-5 |CONFIRMED |Plain `@Produces @ApplicationScoped` for `TokenStore` (:162-165) and `RefreshScheduler` (:171-174) under a "replaces the bean" Javadoc (:60-61); no `@DefaultBean` anywhere in the file.
+|Q-6 |CONFIRMED |Typo'd `default-key-id` silently falls back to first key (`JweDecryptionConfigResolver.java:174-175`); ancillary-only JWE props silently return null (:76-79) vs the DPoP orphan fail-fast (`IssuerConfigResolver.java:429-432`). Path correction applied: the class is in package `quarkus/jwe/`, not `quarkus/config/`.
+|Q-7 |CONFIRMED |`bom/pom.xml:36-53`: jjwt artifacts pinned with `<scope>test</scope>` inside the importable BOM's `dependencyManagement`.
+|Q-8 |CONFIRMED |Classic-only SPI (`ResteasyJaxrsProviderBuildItem`, :186-189); optional `quarkus-resteasy` (runtime pom :85-87); no doc states the limitation.
+|Q-9 |PARTIALLY CONFIRMED |The `getPropertyNames()` prefix-scan mechanism is exactly as described (`ConfigValueParser.java:70-82`); whether env-only kebab-case issuers actually fail depends on SmallRye mapping behavior, which is unverifiable statically — consistent with the finding's own low confidence.
+|Q-10 |CONFIRMED |`@State(Scope.Thread)` (:32); per-thread repo+validator (`AbstractBenchmark.java:52-68`); `jmh.threads=100` (pom :30); "concurrent load … cache effectiveness" Javadoc (:62-66).
+|Q-11 |CONFIRMED |`@TearDown(Level.Trial)` on thread-scoped state (:75-84) → per-thread teardown; `updateAggregatedMetrics` keyed by benchmark name (`LibraryMetricsExporter.java:109`) → last writer wins.
+|Q-12 |CONFIRMED (all 5+ sub-claims) |Maven 3.9.16 vs "3.9.6"; Quarkus 3.38.2 vs "3.34.0"; `0.9.5-SNAPSHOT` vs "1.0.0-SNAPSHOT"; machine path; no root `README.adoc`; client module missing from list; 1 of 3 skills listed; no `agents.md` hardlink.
+|Q-13 |CONFIRMED |All three stale references located as cited.
+|===
+
+=== Test quality (xref:test-quality-review.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence
+|TV-1 |CONFIRMED |`createAlgorithmConfusionToken()` only swaps `kid` (:406-422) under an HS256 comment (:223-224), asserting `KEY_NOT_FOUND` (:244); genuine confusion coverage confirmed at `WiredNegativePathAttackTest.java:90-110`.
+|TV-2 |CONFIRMED |Empty `STRING_LIST` = missing (`ClaimValue.java:113-118`) → azp fallback (`AudienceValidator.java:88-97`); repo-wide grep finds no empty-`aud` test construction.
+|TV-3 |CONFIRMED |`@DisplayName("Should pass…")` (:131) over an `assertThrows` body (:137-141).
+|TV-4 |CONFIRMED |Enum-machinery assertions located as cited in all three files.
+|TV-5 |CONFIRMED |2 vs 16 `@Test` methods (grep counts).
+|TV-6 |CONFIRMED — and understated |The reconstruction `parts[0]+"."+payload+"."` is, under the parser's split semantics, a *2-part* token: it provably dies at `INVALID_JWT_FORMAT` and never exercises signature verification. "May pass for the wrong reason" is a certainty, not a possibility. Report text strengthened accordingly.
+|TV-7 |CONFIRMED |`Generators.fixedValues(RS256)` + fixed kid (`TestTokenHolder.java:98-106`); algorithm variation delegated as documented.
+|TV-8 |CONFIRMED |Fixture-entropy assertions and generator smoke tests as cited.
+|TC-1 |CONFIRMED |Only HTTP 200 asserted (`RevocationSpecIT.java:78-79`), which RFC 7009 §2.2 mandates even for invalid tokens; no post-revocation redemption attempt.
+|TC-2 |CONFIRMED |`body().contains("refresh_token")` (:82) — true with rotation disabled.
+|TC-3 |CONFIRMED |`200 || 302` predicate; Keycloak error pages return 200; no negative logout IT.
+|TC-4 |CONFIRMED |Hand-built `CallbackParameters` into the unit `IssValidator` (:59-75); wired refusal exists only against MockWebServer (`WiredFlowNegativePathIT.java:135`).
+|TC-5 |CONFIRMED |Same evidence as C-7.
+|TC-6 |CONFIRMED |Reflection-based cap test (:47-83); no post-eviction replay test.
+|TC-7 |CONFIRMED |Non-JSON collapse in the fetch sweeps (:90-101); near-tautological direct-construction state sweeps; genuine TEST-8 `parse(rawQuery)` cases (`CallbackParametersAttackDatabaseTest.java:87-113`).
+|TC-8 |CONFIRMED |Exactly 2 tests, both positive (:63-95).
+|TC-9 |CONFIRMED (all sub-claims) |`useRelaxedHTTPSValidation` (`BaseIntegrationTest.java:52`); `skipITs=true` (pom :19, profiles :195/:359); hidden second class at `FetchPathAttackDatabaseTest.java:150`; PKCE duplicate pair; `@EnableGeneratorController` without generators in `PkceChallengeTest:34`.
+|===
+
+=== Documentation (xref:documentation-review.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence
+|D-1 |PARTIALLY CONFIRMED |Broken examples confirmed (`README.md:93-96`; validation-quarkus `README.adoc:107-138`; disabled-by-default at `IssuerConfigResolver.java:171-173`, throw at :122). Detail corrected: consistent with Q-3, the failure surfaces at *first use/first probe*, not "at startup" — report text adjusted.
+|D-2 |CONFIRMED |Stale claim at `doc/client/README.adoc:19-20`; retractions at `doc/client/requirements.adoc:56` (line corrected from 66) and `architecture.adoc:140`; `BackChannelHttp` imports `java.net.http.HttpClient`; the client's only `commons.transport` import is `ParserConfig`.
+|D-3 |CONFIRMED |Ids 25 and 104 in code (`TokenSheriffQuarkusLogMessages.java:185-188, 222-225`); doc ranges stop at 024/103 (`LogMessages.adoc:147, 176`).
+|D-4 |CONFIRMED |Both TokenSheriff-168 rows with parenthetical acknowledgment (`LogMessages.adoc:124-125`).
+|D-5 |CONFIRMED |Identical evidence to Q-12.
+|D-6 |CONFIRMED |"buffer size (128 KB)" at the three cited locations; no such constant in main code; actual bounds at `ParserConfig.java:85, 204-205`.
+|D-7 |CONFIRMED |Status "Proposed" (:18-20); hub lists only ADR-0001; implementation exists.
+|D-8 |CONFIRMED |Doc default 300 (`quarkus-config-doc.adoc:75`) vs code 360 with silent raise (`DpopConfig.java:58, 191-192`).
+|D-9 |CONFIRMED |"CLIENT-1–22" (:46) vs `[#CLIENT-23]` (`requirements.adoc:229-230`).
+|D-10 |CONFIRMED |No `cve-lessons-register` reference in the hub; orphaned benchmarking LogMessages with foreign title.
+|D-11 |CONFIRMED exactly |Independent count reproduced: 48 `<<...>>` occurrences across 12 files; the `* Source:` blank-line violation at `requirements.adoc:387` verified.
+|D-12 |CONFIRMED |"TokenSheriff" at `doc/README.adoc:8`; 19 occurrences in the MP-JWT spec.
+|D-13 |CONFIRMED |Uncaveated "Quarkus 3.34.0" in the performance doc; correct caveat present in the JFR analysis doc.
+|D-14 |CONFIRMED |Introspection-auth statements at all three cited locations; no `IntrospectionClient` exists; `ProviderMetadata.java:80-81` parses the endpoint.
+|D-15 |CONFIRMED |No README in either client-quarkus module; "cui-http-client" vs artifact `cui-http` (`token-sheriff-validation/pom.xml:44`).
+|===
+
+=== Javadoc (xref:javadoc-review.adoc[report])
+
+[cols="1,2,6", options="header"]
+|===
+|ID |Verdict |Independent evidence
+|J-1 |CONFIRMED |`issuerConfig.initJWKSLoader(...)` at `IssuerConfig.java:65`; no such method on the class; real method at `JwksLoader.java:97`.
+|J-2 |CONFIRMED |Two-arg example (:43) vs one-arg signature (:70); the method's own doc says the counter is initialized separately (:63).
+|J-3 |CONFIRMED |Optional-returning examples (:61, :104, :108-115) vs throwing `DecodedJwt decode` (:205); record accessor is `rawToken()` (`DecodedJwt.java:63-68`); `@apiNote` internal (:121).
+|J-4 |CONFIRMED |Builder example (:757-760) vs two constructors (:56, :65) and fixed `REJECTED_ALGORITHMS` (:51).
+|J-5 |CONFIRMED |`ClaimName.of` (`DiscoverableTokenValidationRule.java:39`) vs `fromString → Optional` (:211); `getClaimOption` takes the enum (`TokenContent.java:68`).
+|J-6 |CONFIRMED |All three examples omit `issuerIdentifier`; `build()` throws (`HttpJwksLoaderConfig.java:720-721`).
+|J-7 |CONFIRMED |Three phantom components + "Adaptive caching" in the package-info; none exist repo-wide; contradicted by `HttpJwksLoaderConfig.java:44-45`.
+|J-8 |CONFIRMED |"Default value is 300" (`JwtPropertyKeys.java:322`) vs 360 + silent raise (same evidence as D-8).
+|J-9 |CONFIRMED |EdDSA omitted from documented defaults (:751-752) but present in code (:84); "blacklisting" impossible (fixed constant, :51).
+|J-10 |CONFIRMED |Authorization-header-only class doc (:48-50) vs cookie mode in the constructor (:120-147, :181-182).
+|J-11 |CONFIRMED |The exact 5 class files reproduced by scan (both processors + 3 integration-test-app classes). Additional nuance: ~11 `package-info.java` files also lack `@since`; the "all other ~230 files" statement holds for class files.
+|J-12 |CONFIRMED |`jsonObject` leftover (`StringSplitterMapper.java:43` vs :70); "Portal environment" (`package-info.java:18`); both package-info gap lists reproduced exactly.
+|===
+
+[#reclass]
+== Severity Flags Raised by the Verifier
+
+These are flags recorded for the maintainer's judgment; no verdict changes:
+
+* *V-6 (major → arguably minor)*: exploiting the missing issuer-mismatch gate requires a tampered discovery *response* on an operator-configured, TLS-protected, egress-checked URL, and token-level `iss` validation still holds independently. The report's own residual-risk note supports a downgrade; the misleading error text remains a real documentation defect either way.
+* *Q-4 (major, with mitigation)*: the liveness restart loop can only occur in builds where the health check is actually discovered — per Q-2 that excludes default/dev builds. Q-2 and Q-4 should be read (and fixed) together.
+* *TV-6 (understated)*: the tampered-payload reconstruction provably never reaches signature verification (2-part token under split semantics); the original "may pass for the wrong reason" was too soft. The report was strengthened.
+
+== Corrections Applied to the Reports
+
+None of these change a verdict; all have been folded into the affected report texts:
+
+. C-1: `RefreshTokenFamily` is at `client/token/RefreshTokenFamily.java`, not `client/lifecycle/`.
+. D-2: the requirements-layer retraction is at `doc/client/requirements.adoc:56`, not line 66.
+. D-1: the broken quick-start example errors at first use/first probe, not "at startup" (consistency with Q-3).
+. Q-4: the health-checks doc lives at `token-sheriff-quarkus-parent/doc/integration/health-checks.adoc`; noted the Q-2 interplay.
+. Q-6: `JweDecryptionConfigResolver` is in package `quarkus/jwe/`, not `quarkus/config/`.
+. V-17: the `JWKS_KEYS_UPDATED` call matches its template ("load state: %s"); the defect is message-content usefulness (logs `LOADING` during init), not a placeholder mismatch.
+. TV-6: strengthened from "may pass for the wrong reason" to a certainty.

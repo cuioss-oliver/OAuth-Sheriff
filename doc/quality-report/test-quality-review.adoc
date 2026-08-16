@@ -1,0 +1,281 @@
+= Quality Report: Test Quality Review
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: all test code — `token-sheriff-validation` (165 test files), `token-sheriff-client` (~54 test files), and `token-sheriff-quarkus-parent` (unit + Keycloak integration tests). The review question was not coverage percentage but whether the tests are *real*: do they assert meaningful behavior, use generators correctly, and cover both positive and negative directions including boundaries?
+
+Verification status legend: see xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+== Overall Assessment
+
+Both modules carry one of the stronger security test suites the reviewers have seen:
+
+* *Zero Mockito usage in the validation module* — all tests run against real production objects; zero `@Disabled` tests anywhere; the only mocking framework in the client stack is EasyMock in one Quarkus interceptor test, mocking collaborators (not the unit under test) and backed by real end-to-end CDI coverage.
+* *Negative tests pin exact outcomes* — validation-module negatives almost always assert the specific `SecurityEventCounter.EventType` plus counter increment plus log message rather than "some exception"; client-module negatives assert specific exception types plus message/log content.
+* *The adversarial tiers are genuine* — `WiredNegativePathAttackTest`, `JkuX5uAttackTest`, `PsychicSignatureAttackTest`, `EmbeddedJwkAttackTest` and the tampering suite drive the production `TokenValidator` entry points with byte-level hand-crafted tokens; the client's attack-database and wired tests drive real HTTP through MockWebServer with pipeline-validatable JWTs and real TLS handshakes.
+* *Generator usage is consistent* — `@EnableGeneratorController` in 56 of 165 validation test files and 48 of ~54 client test files; `@ParameterizedTest` used broadly (44 validation files); custom generators are seeded and genuinely vary claim content.
+
+The weaknesses are localized and listed below. The most consequential: three Keycloak integration tests pass for the wrong reason or assert less than their names claim; a unit test named "algorithm confusion" does not test algorithm confusion; the empty-`aud`-array security fork is untested; and two client-side structural gaps (state single-use, family-eviction replay) have neither enforcement nor tests.
+
+== Findings — token-sheriff-validation tests
+
+[#TV-1]
+=== TV-1: The "algorithm confusion" unit test does not test algorithm confusion
+
+[cols="1,4"]
+|===
+|Severity |*major* (misleading coverage map)
+|Confidence |high
+|Location |`pipeline/validator/TokenSignatureValidatorTest.java:217-251, 402-422`
+|===
+
+`shouldRejectAlgorithmConfusionAttack` claims (comment) to create "RS256 in the header but actually signed with HS256", but `createAlgorithmConfusionToken()` only replaces the `kid` with `"wrong-key-id"` — the `alg` is never changed, and the assertion is `KEY_NOT_FOUND`, making the test a functional duplicate of `shouldRejectTokenWhenKeyNotFound` (lines 155-189). Anyone auditing coverage by test name would falsely believe unit-level HS/RS confusion is covered. Mitigating: the real HS256-over-RSA-public-key confusion attack *is* covered end-to-end in `security/WiredNegativePathAttackTest.java:89-110` (VTEST-2, asserts `UNSUPPORTED_ALGORITHM`) — so this is a mislabeled/duplicate test rather than a coverage hole.
+
+[#TV-2]
+=== TV-2: Empty `aud` array (`"aud": []`) behavior is untested — and it silently enables the azp fallback
+
+[cols="1,4"]
+|===
+|Severity |*major* (untested security-relevant behavioral fork)
+|Confidence |high
+|Location |Production: `pipeline/validator/AudienceValidator.java:88-97`, `ClaimValue.java:113-119`; tests: `AudienceValidatorTest.java` (no empty-list case)
+|===
+
+`AudienceValidator` treats an empty-list audience as *missing* (`isNotPresentForClaimValueType()` returns true for an empty `STRING_LIST`), routing into `handleMissingAudience`, where a matching `azp` claim accepts the token when the fallback is enabled. No test anywhere constructs an empty `aud` list. Whether `aud: []` plus matching `azp` is accepted, and whether `aud: []` without `azp` yields `AUDIENCE_MISSING` vs `AUDIENCE_MISMATCH`, is a security-relevant fork with zero tests pinning it. (See also the production-side observation in xref:code-review-validation.adoc#V-17[V-17].)
+
+[#TV-3]
+=== TV-3: Misleading display name asserts the opposite of the test body
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`pipeline/validator/AudienceValidatorTest.java:130-144`
+|===
+
+`@DisplayName("Should pass when audience claim is single string even if unexpected value")` — but the body is `assertThrows(TokenValidationException.class, ...)` asserting `AUDIENCE_MISMATCH`. The test is correct and meaningful; the name will mislead reviewers and coverage audits.
+
+[#TV-4]
+=== TV-4: Pure enum-tautology tests ("just coverage")
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`security/EventCategoryTest.java`; `jwks/LoaderStatusTest.java`; `metrics/MeasurementTypeTest.java:34-46`
+|===
+
+These test JDK `Enum.valueOf`/`ordinal` machinery, not project behavior (`assertEquals(0, COMPLETE_VALIDATION.ordinal())`, `valueOf("INVALID_STATUS")` throws, ...). They pad coverage without protecting behavior and break on any benign enum reorder. The one meaningful assertion in the group is `shouldVerifyCacheLookupHappensBeforeSignatureValidation`, which documents the issue-#131 ordering contract.
+
+[#TV-5]
+=== TV-5: Duplicated `ParserConfig` tests
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`pipeline/ParserConfigTest.java` vs `commons/transport/ParserConfigTest.java`
+|===
+
+The pipeline-package copy (2 tests: default + custom builder values) is a strict subset of the commons copy (16 tests including boundary/zero/negative rejection). The redundant copy should be deleted or merged.
+
+[#TV-6]
+=== TV-6: Tampered-payload security tests may pass for the wrong reason
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`security/TokenValidationSecurityTest.java:81-97, 128-155`; `security/JwtTokenTamperingUtilTest.java:84-124`
+|===
+
+`shouldRejectTokensWithTamperedPayloads` reconstructs the token with an *empty signature segment* and asserts only `assertThrows(TokenValidationException.class, ...)` without an event type. The verification pass established this is not merely a risk but a certainty: under the parser's `split` semantics the reconstruction is a *two-part* token, so it provably dies at `INVALID_JWT_FORMAT` and never exercises signature verification at all. The suite remains safe overall because `JwtTokenTamperingUtilTest` re-runs every `TamperingStrategy` through the full pipeline — but those parameterized tests also assert only `assertNotNull(exception.getEventType())` rather than the expected event per strategy, so a strategy that started failing for a structurally wrong reason would go unnoticed. (`WiredNegativePathAttackTest`'s header comment explicitly calls out and avoids this exact trap.)
+
+[#TV-7]
+=== TV-7: `TestTokenHolder` "generators" for `alg`/`kid` are constants
+
+[cols="1,4"]
+|===
+|Severity |info (documented as intentional; noted for the false impression of variation)
+|Confidence |high
+|Location |`test/TestTokenHolder.java:98-106` (`Generators.fixedValues(Algorithm.RS256)`, fixed `kid`)
+|===
+
+Every `@TestTokenSource`-driven pipeline test exercises only RS256 with the default `kid`; the `fixedValues` wrapper gives a false impression of variation. This is documented as intentional (algorithm variation is delegated to `TokenSignatureValidatorAlgorithmTest`, `@EnumSource` over RS/PS/ES/EdDSA). Claim content, by contrast, genuinely varies (UUID subject, `ScopeGenerator`, `RoleGenerator`, seeded via `@EnableGeneratorController`).
+
+[#TV-8]
+=== TV-8: Test-infrastructure self-tests with soft assertions
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |medium
+|Location |`test/generator/TokenSecurityPropertiesTest.java:99-127`; `TestTokenGeneratorsTest.java:36-52`
+|===
+
+Shannon-entropy thresholds on test-generated tokens validate the fixture (with an arbitrary bound), not production code; the generator smoke tests are largely `assertNotNull`/`containsKey`. Acceptable as fixture smoke tests; they contribute no production coverage.
+
+Note: the 11 `assertDoesNotThrow` calls in `ExpirationValidatorTest` and peers were checked and are *legitimate* accept-path assertions (the validators return void; the paired `assertEquals(0, counter.getCount(...))` confirms no event fired).
+
+=== Missing negative/boundary tests (validation module)
+
+. *`aud: []`* — the untested fork of TV-2: empty array + matching `azp` (does the fallback fire?), empty array + no `azp`, per token type.
+. *`exp` exactly at `now` at the validator/pipeline level* — `ExpirationValidatorTest.java:59-86` tests only ±1 hour; the boundary (`exp + skew == now`, one second past) is covered only at the helper level (`ValidationContextTest.java:175-190`); a wiring regression (pipeline passing skew 0) would not be caught.
+. *Unit-level RS-header/HS-signature confusion at `TokenSignatureValidator`* — only covered end-to-end (VTEST-2); the unit test claiming it does not (TV-1).
+. *`azp` as a JSON array / non-string type* — `AudienceValidator.isAzpClaimMatchingExpectedAudience` calls `getOriginalString()` on whatever `azp` is; a list-typed `azp` is untested in both validators.
+. *`nbf` exactly one second past the skew boundary with a fixed clock through `validateNotBefore`* — the reject case uses +120 s vs 60 s skew with the real clock; the exact fail boundary is covered only on the `ValidationContext` helper.
+. *JWKS with duplicate `kid` entries* — no test pins which key wins (first/last/error) when two keys share a `kid`; a known JWKS-confusion vector.
+. *Expected event type per tampering strategy* in `JwtTokenTamperingUtilTest` (see TV-6).
+. *ECDH-ES through the production parser* — no test routes an ECDH-ES JWE through `NonValidatingJwtParser`, which is why xref:code-review-validation.adoc#V-1[V-1] went unnoticed: `JweDecryptorTest.parseHeader` hand-extracts header fields instead of using the production parser.
+
+== Findings — token-sheriff-client and Quarkus tests
+
+[#TC-1]
+=== TC-1: `RevocationSpecIT` proves nothing about revocation (passes for the wrong reason)
+
+[cols="1,4"]
+|===
+|Severity |*major*
+|Confidence |high
+|Location |`token-sheriff-quarkus-integration-tests/.../client/RevocationSpecIT.java:64-78`
+|===
+
+The test asserts only HTTP 200 from the revocation endpoint — but RFC 7009 §2.2 requires the AS to return 200 even for invalid, unknown, or already-revoked tokens, so the test passes regardless of whether anything was revoked. The discriminating follow-up — attempting to use the revoked refresh token and asserting the AS refuses it — is absent.
+
+[#TC-2]
+=== TC-2: `RefreshSpecIT` claims rotation but never asserts it
+
+[cols="1,4"]
+|===
+|Severity |*major*
+|Confidence |high
+|Location |`.../client/RefreshSpecIT.java:79-83`
+|===
+
+`assertTrue(response.body().contains("refresh_token"), "Keycloak rotates the refresh token")` — the body contains a `refresh_token` field whether or not it differs from the initial one; the test would pass with rotation disabled. It should assert the returned token differs from the initial one. (The client-side reuse-detection contract is well covered at unit/wired level — see "Strong areas".)
+
+[#TC-3]
+=== TC-3: `LogoutSpecIT` cannot distinguish success from a Keycloak error page
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`.../client/LogoutSpecIT.java:87-89`
+|===
+
+`statusCode == 200 || statusCode == 302` — Keycloak also serves error pages ("Invalid parameter: redirect_uri") with 200, so an unregistered or broken logout URL could still pass. No negative logout IT exists; the open-redirect defense is unit-only.
+
+[#TC-4]
+=== TC-4: `MixUpSpecIT` is a unit test wearing an IT badge
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`.../client/MixUpSpecIT.java:59-74`
+|===
+
+It fetches two realms' discovery documents but then feeds hand-built `CallbackParameters` into the unit `IssValidator` directly — no mixed-up flow is driven over HTTP through the wired exchange path. The wired mix-up refusal is covered against a mock server (`WiredFlowNegativePathIT.shouldRefuseIssMismatchBeforeTokenCall`); real-Keycloak coverage of the wired path is missing.
+
+[#TC-5]
+=== TC-5: State/flow-context single-use (replay) has no enforcement and no test
+
+[cols="1,4"]
+|===
+|Severity |minor (structural gap in both code and tests)
+|Confidence |high
+|Location |`token-sheriff-client/.../flow/FlowContext.java` ("One-time-use discard contract (L7)"); `token-sheriff-client-quarkus/.../TokenSheriffClientProducer.java`
+|===
+
+The single-use invariant is documented as "enforced by the caller's discard"; no test in either module presents the same context against a second callback and asserts rejection, and no session-store implementation exists in `token-sheriff-client-quarkus` to make the discard concrete. A replayed callback with the correct state would be accepted twice by `CallbackHandler`. Cross-reference: xref:code-review-client.adoc#C-7[C-7].
+
+[#TC-6]
+=== TC-6: Family-eviction security consequence untested (and the mechanics are tested via reflection)
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`.../lifecycle/TokenLifecycleManagerFamilyEvictionTest.java:47-83`
+|===
+
+The LRU cap is verified via reflection on private fields. What is *not* tested is the security-relevant boundary: after a session's family is LRU-evicted, replaying its superseded refresh token seeds a fresh family and reuse detection silently no longer fires. That cap+1 replay case has no test.
+
+[#TC-7]
+=== TC-7: Attack-database corpora are partly mono-dimensional on the parsing paths
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`.../hardening/FetchPathAttackDatabaseTest.java:90-101`; `RetrievalParsingAttackDatabaseTest.java:112-121`; `.../flow/CallbackParametersAttackDatabaseTest.java:85-121`
+|===
+
+The fetch/retrieval sweeps serve SQLi/XSS/traversal strings as HTTP-200 response bodies and assert `TransportException` — since virtually none of these payloads is valid JSON, the corpora collapse to a single predicate ("non-JSON body rejected"). They do drive the real production clients over real HTTP (no bypass), and the oversized-body case is separately covered — but adversarial *valid-JSON* shapes (wrong-typed fields, HTTP 200 with a missing `access_token`, deep nesting, duplicate JSON keys) are not in the corpus. Similarly, the state-mismatch sweeps construct `CallbackParameters` directly (near-tautological — a state that is not the flow's can never match regardless of payload), though the TEST-8 cases redeem this by driving the real `parse(rawQuery)` path including duplicate-`state` smuggling rejection.
+
+[#TC-8]
+=== TC-8: `ClientAuthSpecIT` is positive-only
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`.../client/ClientAuthSpecIT.java:63-93`
+|===
+
+`client_secret_basic` and `client_secret_post` are proven to succeed at Keycloak; there is no wrong-secret/absent-auth → 400/401 negative. Unit-level selection negatives are strong, but Keycloak's actual refusal of bad client credentials is never demonstrated.
+
+[#TC-9]
+=== TC-9: Integration-test layer observations
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |high
+|===
+
+* *TLS identity never verified at the IT layer*: `BaseIntegrationTest` uses `RestAssured.useRelaxedHTTPSValidation()` and per-test `trustAllContext()`. HTTPS transport is real, but server-certificate validation is disabled throughout the IT layer. Compensated at unit level by `WiredFlowHttpsTest`, which performs a genuine JDK handshake and asserts the mismatched-trust case fails before any request leaves (`assertCallsAnswered(0)`) — "HTTPS enforced" claims should be read with that split in mind.
+* *ITs are off by default*: `token-sheriff-quarkus-integration-tests/pom.xml` sets `skipITs=true`; failsafe runs only under the `integration-tests` profile. Not a defect — but the Keycloak suite's guarantees hold only where that profile is actually exercised in CI.
+* *Minor duplication/cosmetics*: `PkceDowngradeTest.shouldNeverExposePlainTransform` duplicates `PkceChallengeTest.shouldAlwaysReportS256`; a second top-level class (`TokenEndpointTransportControlTest`) hides inside `FetchPathAttackDatabaseTest.java`; a few files carry `@EnableGeneratorController` without using generators (e.g. `PkceChallengeTest`).
+
+=== Missing negative/boundary tests (client + integration)
+
+. State replay/single-use: second presentation of a consumed `FlowContext` against `CallbackHandler.handle` (TC-5).
+. Family-eviction reuse escape: replay of a superseded refresh token after LRU eviction (TC-6).
+. Keycloak refresh-token reuse (rotated-token replay → AS error) and actual rotation assertion (`newRT != oldRT`) in `RefreshSpecIT` (TC-2).
+. Post-revocation token use in `RevocationSpecIT` (revoked RT redeemed → `invalid_grant`) (TC-1).
+. Keycloak-side logout negative (unregistered `post_logout_redirect_uri` → error page) plus positive discrimination beyond "200 or 302" (TC-3).
+. Wrong client secret / missing auth → Keycloak 401 (TC-8).
+. Valid-JSON adversarial token/userinfo responses: HTTP 200 with missing `access_token`, wrong-typed `expires_in`, duplicate JSON keys (TC-7).
+. Discovery: an HTTPS discovery document whose endpoints point at cleartext `http://` URLs; wrong `Content-Type`; 3xx handling. (`DiscoveryAdversarialTest` covers non-TLS issuer, 5xx, invalid JSON, issuer mismatch; oversize is covered in `DiscoveryResolverTest`.)
+. Case/normalization boundaries for `iss` and the post-logout URI (`HTTPS://ISSUER…`, trailing-slash equivalence — the "equivalent-URL accepted?" direction is only implicitly rejected).
+. PKCE at real Keycloak: a code minted without a challenge being redeemable with a verifier (code-injection variant at the AS); `AuthCodePkceSpecIT` covers wrong-verifier rejection.
+
+== Areas Verified Strong
+
+Validation module:
+
+* `security/WiredNegativePathAttackTest` — exemplary: hand-built tokens (raw base64url + `Signature.getInstance`), real `TokenValidator` entry point, exact event-type assertions, explicitly designed so assertions cannot be satisfied by an incidental earlier failure. Covers HS/RS confusion, JWE decompression bomb, RSA1_5 downgrade, Bleichenbacher-oracle indistinguishability, DPoP binding, `NoNe` case-variant, JSON-depth bomb, cross-audience.
+* Signature matrix: `TokenSignatureValidatorAlgorithmTest` (`@EnumSource` accept + tamper-reject across RS/PS/EdDSA), ES256 format tests, DER converter tests, `PsychicSignatureAttackTest` (CVE-2022-21449, r=s=0 for ES256/384/512).
+* Time claims: accept/reject for `exp`/`nbf` including the exact skew boundary with a fixed clock at the helper level, token-age enabled/disabled/young/old, future-`iat`, blank `sub`/`iss`.
+* Header validation: unsupported/missing `alg`, missing `kid`, embedded-JWK rejection (CVE-2018-0114) in both directions, RFC 9068 `typ` matrix.
+* Audience/azp: accept/reject pairs for every config flag per token type (apart from the empty-array gap), `ClientConfusionAttackTest`.
+* JWE: decrypt success plus wrong key, tampered tag/ciphertext, RSA1_5 rejection, kid-miss, ECDH-ES invalid-curve and off-curve-point attacks (at the `JweDecryptor` unit level).
+* Parser bounds: format, bad base64, bad JSON, size/depth/array/string ceilings, each with its event type.
+
+Client + Quarkus:
+
+* PKCE both directions including real-Keycloak wrong-verifier rejection; independent RFC 7636 challenge recomputation.
+* State/CSRF and code injection: both directions, length-boundary mismatch, code-smuggled-with-error, CRLF/log-forging truncation, cross-session injection.
+* Nonce and token binding: full `at_hash` matrix with independently computed digests.
+* Mix-up: refusal proven to happen *before* the token endpoint is called (`assertRefusedBeforeTokenEndpoint` with `assertCallsAnswered(0)`).
+* Refresh rotation reuse: wired reuse → RFC 7009 revocation + fail-closed store clear (even when revocation itself throws); an 8-thread single-flight race proven *not* misclassified as reuse; OIDC §12.2 ID-token consistency in both directions; 16-thread rotation serialization.
+* Client-auth selection: no silent downgrade, fail-closed on unadvertised secret, order independence, mTLS special case.
+* DPoP: RSA/EC/OKP matrix with independent signature verification and JWK cross-derivation; jti replay fail-closed including the LRU window; end-to-end at real endpoints (missing header, wrong key, replayed jti, stale iat, wrong ath → 401; positives → 200).
+* TLS: genuine JDK handshake in both trust directions with proof that no request left before refusal; cleartext-client-not-reused-for-TLS.
+* Logout open-redirect (unit): exact-match only, look-alike host/sub-path/query/prefix rejections, full attack corpus, state-echo binding.
+* Bearer path (Quarkus): real 200 positives with body assertions and 401 negatives across producer/interceptor/CDI; a thorough 400/401 boundary sweep in `ApiValidationSpecIT`.

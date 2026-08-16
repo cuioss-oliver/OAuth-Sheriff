@@ -1,0 +1,270 @@
+= Quality Report: Code Review — token-sheriff-validation
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: all production code of `token-sheriff-validation` (src/main/java) — the token validation pipeline, JWT/JWE parsing, signature verification, JWKS loading, claim validation, plus the supporting configuration, transport, caching, concurrency, metrics, and logging code.
+
+Verification status legend (added after the independent adversarial verification pass, see xref:adversarial-verification.adoc[Adversarial Verification Report]): CONFIRMED = independently reproduced from code; PARTIALLY CONFIRMED = core claim holds, detail corrected; REFUTED = withdrawn.
+
+== Overall Assessment
+
+This is an unusually well-hardened JWT validation library. The validation pipeline itself is strictly fail-closed: every error path throws a typed `TokenValidationException`, the algorithm allowlist is checked before key lookup, `none`/HS* are structurally unusable, embedded-JWK/`jku`/`x5u` attacks are dead on arrival, ECDSA "psychic signatures" (CVE-2022-21449) are defended in-library, JWE uses verify-then-decrypt with an independent invalid-curve check, and DoS bounds (token size, payload size, nesting depth, array size, JWKS size/count, bounded HTTP body streaming, decompression cap) are applied consistently and early. *No token-acceptance bypass (fail-open) was found in the cryptographic validation path.*
+
+The substantive defects are concentrated in two areas:
+
+* *Operational lifecycle of the JWKS loader* — the loader's status state machine cannot recover from startup failures, `TokenValidator.close()` leaks refresh executors, and the health status can misrepresent reality in both directions.
+* *Policy enforcement at the caching boundary* — the access-token cache silently bypasses the configured `maxTokenAgeSeconds` control and applies the most lenient issuer's clock skew to all issuers.
+
+Additionally, one feature (ECDH-ES JWE) is confirmed non-functional end-to-end (fail-closed: it rejects everything), and the well-known configuration path silently discards several user-supplied security settings.
+
+== Findings
+
+[#V-1]
+=== V-1: ECDH-ES JWE tokens cannot be parsed — `epk` deserialized as string, RFC 7518 requires an object
+
+[cols="1,4"]
+|===
+|Severity |*major* (functional defect; fail-closed)
+|Confidence |high (empirically verified against the module's compiled DSL-JSON converters)
+|Location |`token-sheriff-validation/src/main/java/de/cuioss/sheriff/token/validation/json/JwtHeader.java:77`, `pipeline/NonValidatingJwtParser.java:464-478`, `jwe/JweDecryptor.java:198-203`
+|===
+
+`JwtHeader` is `@CompiledJson` with `String epk`; the generated converter reads the field via `StringConverter.READER`. A spec-compliant JWE carries `epk` as a JSON *object* (RFC 7518 §4.6.1.1), so parsing `{"alg":"ECDH-ES","enc":"A128GCM","epk":{...}}` fails with `ParsingException: Expecting '"' for string start. Found {` — every real ECDH-ES token is rejected in `decodeJwtHeader` with `FAILED_TO_DECODE_JWT` before `JweDecryptor.deriveCekEcdhEs` is ever reached.
+
+ECDH-ES is advertised as supported (`JweAlgorithmPreferences.getDefaultKeyManagementAlgorithms()` includes it) but is dead code end-to-end; a deployment relying on it rejects 100% of tokens. The unit tests mask this: `JweDecryptorTest.parseHeader` builds `JwtHeader` by hand-extracting fields instead of using the production parser, and no test routes an ECDH-ES token through `NonValidatingJwtParser` (see xref:test-quality-review.adoc[Test Quality Report]).
+
+Positive side observation: the same strict parsing means an object-valued `jwk` header also fails at parse, so the CVE-2018-0114 defense is fail-closed even before `validateNoEmbeddedJwk` runs.
+
+[#V-2]
+=== V-2: `maxTokenAgeSeconds` is not enforced for cached access tokens
+
+[cols="1,4"]
+|===
+|Severity |*major* (configured security control silently bypassed)
+|Confidence |high
+|Location |`validation/cache/AccessTokenCache.java:192-204`, `pipeline/AccessTokenValidationPipeline.java:165-184`
+|===
+
+On a cache hit, only expiration is re-checked (`existing.verifyToken(tokenString) && !existing.isExpired(now, clockSkewSeconds)`), and the cache-hit path re-runs only DPoP validation and custom rules. `ExpirationValidator.validateTokenAge` (`ExpirationValidator.java:131-147`) runs only inside `TokenClaimValidator.validate`, which is skipped for hits.
+
+Failure scenario: an issuer configures `maxTokenAgeSeconds = 300` while the IdP issues tokens with `exp = iat + 3600`. A token validated once at age 1 minute is served from the cache — and accepted — at ages 6, 30, and 59 minutes, long past the configured maximum, until `exp` finally evicts it. The exact control the operator opted into (MP-JWT `mp.jwt.verify.token.age`) is silently defeated by the default-enabled cache. Token age is the only claim check that fails open this way (`nbf`/future-`iat` only become more satisfied over time).
+
+[#V-3]
+=== V-3: Issuer can never recover after a failed initial JWKS load — loader status frozen after init
+
+[cols="1,4"]
+|===
+|Severity |*major* (availability; documented recovery path non-functional)
+|Confidence |high
+|Location |`validation/jwks/http/HttpJwksLoader.java:177-181, 316-361`; `validation/IssuerConfigCache.java:204-210`
+|===
+
+The init path deliberately leaves the status `UNDEFINED` "to allow retries" when background refresh is enabled — but nothing on the retry path ever sets it to `OK`: `performBackgroundRefresh()` → `updateKeys()` installs keys yet `status.set(...)` occurs only inside init and `close()`. Meanwhile the recovery path in `IssuerConfigCache` requires `getLoaderStatus() == LoaderStatus.OK` before re-admitting an issuer.
+
+Failure scenario: the IdP is briefly unreachable at process startup → initial load fails (status `UNDEFINED`) → a later background refresh fetches keys successfully → status still `UNDEFINED` → every `resolveConfig(issuer)` throws `NO_ISSUER_CONFIG` until process restart, despite valid keys being in memory. The `IssuerConfigCache` Javadoc claim that "an issuer that recovers via background refresh becomes resolvable again" holds only for custom loaders; `IssuerConfigCacheRecoveryTest` uses a hand-rolled stub, not `HttpJwksLoader`, so the real loader's recovery is untested.
+
+[#V-4]
+=== V-4: Well-known discovery failure at startup is permanently fatal — no retry is ever armed
+
+[cols="1,4"]
+|===
+|Severity |*major* (availability; asymmetric with direct-JWKS mode)
+|Confidence |high
+|Location |`validation/jwks/http/HttpJwksLoader.java:147-149, 194-206`
+|===
+
+If well-known discovery is unreachable or invalid at init, `handleAdapterResolutionFailure()` sets a hard `ERROR`, and — because `startBackgroundRefresh()` is only reached after successful adapter resolution — no retry mechanism is ever armed. The `initFuture` idempotency guard (lines 136-140) ensures init never re-runs. By contrast, a *direct* JWKS URL that is unreachable at init gets `UNDEFINED` plus scheduled retries.
+
+Failure scenario: a rolling restart while the IdP's discovery endpoint is briefly down leaves that issuer dead until the application is restarted again. Combined with V-3, `HttpJwksLoader` effectively has no startup-failure recovery in either mode.
+
+[#V-5]
+=== V-5: `TokenValidator.close()` never closes JWKS loaders — refresh executors and tasks leak
+
+[cols="1,4"]
+|===
+|Severity |*major* (resource leak on redeploy/restart cycles)
+|Confidence |high
+|Location |`validation/TokenValidator.java:459-465`; `validation/jwks/http/HttpJwksLoader.java:445-461`; `commons/transport/HttpJwksLoaderConfig.java:709-717`
+|===
+
+`TokenValidator.close()` shuts down the pipeline and DPoP replay protection only. `HttpJwksLoader` implements `AutoCloseable` with a correct `close()` (cancels the refresh task, shuts down the owned executor), but a repo-wide search finds no production caller. The auto-created executor uses daemon threads, so JVM exit is unaffected — but in redeploy/restart-in-container scenarios (app servers, test suites, Quarkus dev mode) each `TokenValidator` lifecycle leaks a scheduler thread that keeps fetching the JWKS endpoint indefinitely.
+
+[#V-6]
+=== V-6: Issuer-mismatch trust gate silently inactive for programmatic well-known users unless a second `issuerIdentifier` knob is set
+
+[cols="1,4"]
+|===
+|Severity |*major* (documented security gate conditionally absent; misleading error text)
+|Confidence |medium
+|Location |`validation/jwks/http/HttpJwksLoader.java:503-522`; `commons/transport/HttpJwksLoaderConfig.java:635-643, 719-724`; `validation/IssuerConfig.java:55-62`
+|===
+
+`HttpJwksLoader.resolveIssuer` hard-fails when the *configured* issuer mismatches the *discovered* issuer — but "configured issuer" here is `HttpJwksLoaderConfig.getIssuerIdentifier()`, which the config builder makes mandatory for direct JWKS mode yet *optional* for well-known mode. `IssuerConfig.build()` never propagates its own (mandatory) `issuerIdentifier` into the `HttpJwksLoaderConfig`. Consequently the documented hard-fail gate against a tampered discovery document (foreign issuer + attacker `jwks_uri`) does not run unless the operator *also* sets `HttpJwksLoaderConfig.builder().issuerIdentifier(...)` — and the `IssuerConfig` class-level usage example shows exactly the shape without it.
+
+The Quarkus resolver does propagate the issuer (`IssuerConfigResolver.java:512`), so this affects programmatic core-library users only. A compounding trap: the mutual-exclusivity error message claims the opposite of reality — "When using well-known discovery, the issuer identifier is automatically provided by the discovery document" (`HttpJwksLoaderConfig.java:635-643`).
+
+Note: the residual risk is bounded because token-level issuer validation still compares the token `iss` against the `IssuerConfig.issuerIdentifier`; the gap concerns the JWKS-source trust anchor (which discovery document is trusted to supply `jwks_uri`), not token acceptance for a wrong issuer. The verification pass flagged the severity as arguable (major → minor) on exactly this ground — exploiting it requires a tampered discovery *response* on an operator-configured, TLS-protected, egress-checked URL; the misleading error text remains a real defect either way.
+
+[#V-7]
+=== V-7: Well-known mode silently discards user-configured SSL context, TLS versions, timeouts, and retry config
+
+[cols="1,4"]
+|===
+|Severity |*major* (config knobs silently ignored; fail-closed)
+|Confidence |high
+|Location |`commons/transport/HttpJwksLoaderConfig.java:539-599, 673-704, 237-254`
+|===
+
+The builder methods `sslContext(...)`, `tlsVersions(...)`, `connectTimeoutSeconds(...)`, `readTimeoutSeconds(...)` all write into `httpHandlerBuilder` — which in well-known mode is thrown away: `WellKnownConfig` is built fresh with its own defaults, and the JWKS handler is then derived from the well-known handler, so *both* the discovery and the JWKS fetch ignore the user's TLS and timeout settings. `retryConfig(...)` is honored for the JWKS adapter, but the discovery fetch always uses `RetryConfig.defaults()`.
+
+Failure scenario: an operator with a private-CA IdP calls `.wellKnownUrl(...).sslContext(customTruststoreCtx)` — the custom truststore is silently ignored and discovery fails with a TLS error. No warning is emitted. Fail-closed, but a classic knob-promises-more-than-the-code-does trap.
+
+[#V-8]
+=== V-8: Loader reports `OK` even when the fetched JWKS yielded zero usable keys
+
+[cols="1,4"]
+|===
+|Severity |minor (health/monitoring misrepresentation; token path stays fail-closed)
+|Confidence |high
+|Location |`validation/jwks/http/HttpJwksLoader.java:164-171, 316-336`; contrast `jwks/JWKSKeyLoader.java:407`; `jwks/LoaderStatus.java:31-32`
+|===
+
+If the HTTP fetch succeeds but parsing yields no usable keys (all keys unparseable, or an empty `keys` array), `updateKeys` returns without installing anything — yet the loader still declares `LoaderStatus.OK`, contradicting the `OK` contract ("contains at least one key"). An HTTP 200 with `{"keys":[]}` yields a loader that `IssuerConfigCache` treats as healthy; every token then fails with `KEY_NOT_FOUND` while health endpoints report a healthy issuer that cannot validate anything. Token acceptance remains fail-closed; monitoring and the recovery logic operate on wrong information.
+
+[#V-9]
+=== V-9: Shared access-token cache applies the maximum clock skew across all issuers
+
+[cols="1,4"]
+|===
+|Severity |minor (stricter issuer's expiration policy relaxed)
+|Confidence |high
+|Location |`validation/TokenValidator.java:347-353`; `validation/cache/AccessTokenCache.java:85-89, 192-195`
+|===
+
+The cache is constructed with `max(clockSkewSeconds)` across all enabled issuers, and that skew gates cache *hits*, not just eviction. With issuer A at `clockSkewSeconds(0)` and issuer B at 300, a cached issuer-A token whose `exp` passed 200 seconds ago is still served as valid from the cache, while the full pipeline would reject it. Heterogeneous multi-issuer deployments quietly get the most lenient issuer's expiration window applied to every cached token. The behavior is deliberate and commented, but it does relax a stricter issuer's policy.
+
+[#V-10]
+=== V-10: Once healthy, keys can be served stale forever; `jwks_uri` is never re-discovered
+
+[cols="1,4"]
+|===
+|Severity |minor (staleness/monitoring)
+|Confidence |high
+|Location |`validation/jwks/http/HttpJwksLoader.java:215-270, 403-443`
+|===
+
+After a successful init, the status stays `OK` permanently — repeated refresh failures only log `BACKGROUND_REFRESH_FAILED` at WARN; there is no staleness bound and no health degradation signal. Well-known discovery runs exactly once in `resolveJWKSAdapter()`; the resulting adapter/URI is cached for the loader's lifetime, so if the IdP relocates its `jwks_uri`, refreshes fail forever while health still reports `OK`. New `kid` values fail closed (`KEY_NOT_FOUND`), but retired-but-compromised keys are honored indefinitely and monitoring is misled.
+
+[#V-11]
+=== V-11: ECDSA psychic-signature guard (CVE-2022-21449) exists in the JWT path but not the DPoP path
+
+[cols="1,4"]
+|===
+|Severity |minor (defense-in-depth divergence)
+|Confidence |high
+|Location |`pipeline/validator/TokenSignatureValidator.java:196-201, 248-265` vs `validation/dpop/DpopProofValidator.java:501-516`; `EcdsaSignatureFormatConverter.java:75-107`
+|===
+
+`TokenSignatureValidator` explicitly rejects `r/s ∉ (0, n)` before verification, with the stated rationale of keeping the CVE-2022-21449 defense in-library rather than relying solely on the JDK provider. `DpopProofValidator.verifyDpopSignature` calls `SignatureVerificationUtil.verifySignature` directly, and the format converter happily encodes `r = s = 0` into DER. On a JDK predating the April 2022 fix, an all-zero ES* DPoP proof signature with an attacker-chosen embedded `jwk` would verify. On patched JDKs this is a consistency divergence only — the same concern is handled differently in two places and could drift further.
+
+[#V-12]
+=== V-12: DPoP replay cache accepts unauthenticated writes and can grow past `maxSize`
+
+[cols="1,4"]
+|===
+|Severity |minor (memory-DoS vector; replay protection itself sound)
+|Confidence |medium
+|Location |`validation/dpop/DpopProofValidator.java:306-313, 334`; `validation/dpop/DpopReplayProtection.java:122-144`
+|===
+
+`replayProtection.checkAndStore(jti)` runs before `ath`/`htu`/`htm` and before the `cnf.jkt` thumbprint match, and eviction deliberately only removes entries whose freshness window has elapsed ("under a flood of in-window jtis the cache may temporarily exceed maxSize"). An attacker who self-signs proofs with their own embedded JWK (valid signature over their own key) but a non-matching thumbprint can insert unbounded random `jti` values (up to 4 KB each) at request rate for the TTL window. The in-window-never-evict trade-off is the right one for replay protection; the write should simply happen after the thumbprint check.
+
+[#V-13]
+=== V-13: Log calls mismatch their `LogRecord` templates
+
+[cols="1,4"]
+|===
+|Severity |minor (logging-standard violation; diagnostic info lost)
+|Confidence |high
+|Location |`validation/jwks/http/HttpJwksLoader.java:175`; `commons/transport/WellKnownConfigurationConverter.java:76-77, 82, 103, 109, 113, 131, 135`
+|===
+
+* `LOGGER.error(ERROR.JWKS_LOAD_FAILED, errorMessage, issuer)` — but the template (`JWTValidationLogMessages.java:68-72`) is `"Failed to load JWKS"` with zero placeholders: the error cause and issuer never render into the documented TokenSheriff-203 message.
+* `ERROR.JSON_PARSE_FAILED` is `"Failed to parse JSON from %s: %s"` (two placeholders) but is called with one argument in five places, and with a *nested* unexpanded `%s` inside an argument in two more — producing malformed messages such as `Failed to parse JSON from Empty well-known response: %s`.
+
+This violates the project's documented LogRecord discipline (AGENTS.md; `doc/LogMessages.adoc`).
+
+[#V-14]
+=== V-14: Duplicate log identifier `TokenSheriff-168`
+
+[cols="1,4"]
+|===
+|Severity |minor (breaks unique-identifier contract for alerting)
+|Confidence |high
+|Location |`commons/transport/TransportLogMessages.java:88-92` vs `validation/JWTValidationLogMessages.java:507-511`; `doc/LogMessages.adoc:124-125`
+|===
+
+`SSRF_EGRESS_BLOCKED_DISCOVERY` and `DUPLICATE_JWKS_KID` both use identifier 168 with the same `TokenSheriff` prefix. Anyone alerting or filtering on `TokenSheriff-168` conflates an SSRF block with a duplicate-kid warning. `doc/LogMessages.adoc` acknowledges the collision parenthetically instead of resolving it. All other identifiers and templates were cross-checked and match.
+
+[#V-15]
+=== V-15: `ParserConfig.maxPayloadSize` does double duty as the JWKS/discovery response ceiling
+
+[cols="1,4"]
+|===
+|Severity |minor (one knob, two unrelated security ceilings; fail-closed)
+|Confidence |medium
+|Location |`commons/transport/JwksHttpContentConverter.java:72-79`; `commons/transport/ParserConfig.java:112-117`
+|===
+
+The HTTP content converters feed `parserConfig.getMaxPayloadSize()` (default 8 KB, documented purely as "each Base64-decoded JWT part") into the bounded body handler for JWKS and discovery responses. Real-world JWKS documents carrying `x5c` chains (for example Azure AD's common endpoint) routinely exceed 8 KB. A default-configured deployment against such an IdP fails closed at startup with a size rejection, and the remedy — raising `maxPayloadSize` — invisibly raises the token-part limit at the same time.
+
+[#V-16]
+=== V-16: `initJWKSLoader` race — async work starts before the CAS; duplicate initialization possible
+
+[cols="1,4"]
+|===
+|Severity |minor (latent concurrency defect; benign at the current single call site)
+|Confidence |medium
+|Location |`validation/jwks/http/HttpJwksLoader.java:143-188, 316-357, 363-371`
+|===
+
+`CompletableFuture.supplyAsync(...)` starts the initialization work before `initFuture.compareAndSet(null, future)` decides the winner; the loser's future is discarded but its supplier still runs — two discovery fetches, two adapters, and two `scheduleAtFixedRate` tasks, with `refreshTask.set(...)` overwriting the first `ScheduledFuture` so it can never be cancelled by `close()`. Mitigated in practice by the single call site (`IssuerConfigCache` constructor), but the "idempotency guard" comment overpromises. A related check-then-act window exists in `updateKeys()`; its worst case is a redundant rotation of an identical key set into the retired list.
+
+[#V-17]
+=== V-17: Smaller consistency and robustness observations
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |high unless noted
+|===
+
+* *EgressPolicy TOCTOU residue* (`commons/transport/EgressPolicy.java:111-141`): `check()` resolves DNS itself, but the subsequent `java.net.http` fetch performs its own resolution — the Javadoc claim "the check runs against the same fresh resolution the fetch will use" is not literally true; a 0-TTL rebinding window remains (narrowed, not closed, by JVM DNS caching). Also not blocked: CGNAT `100.64.0.0/10`, `0.0.0.0/8` beyond exact any-local, broadcast. Defensible defaults; the guarantee should be documented accurately.
+* *Trailing-dot tokens accepted* (`pipeline/NonValidatingJwtParser.java:291`, `dpop/DpopProofValidator.java:241`): `token.split("\\.")` drops trailing empty strings, so `header.payload.signature.` parses as three parts. The signature is still verified over the exact transmitted `parts[0] + "." + parts[1]`, so nothing unsigned is accepted — format laxity only (multiple raw spellings of one token; distinct cache entries).
+* *`exp` boundary accepts `now == exp + skew`* (`domain/context/ValidationContext.java:148-150`): RFC 7519 requires the current time to be strictly before `exp`; the predicate grants one extra second. Consistent everywhere (pipeline and cache share it).
+* *Duplicate JSON keys resolve last-value-wins* (empirically verified through the compiled converters): internally consistent — the same parsed value feeds header validation, signature verification, and claims, so there is no in-library differential. Residual risk only if a downstream system re-parses `getRawToken()` with a first-wins parser; worth documenting.
+* *EC JWK `alg` not cross-checked against curve* (`jwks/parser/KeyProcessor.java:223-233`, confidence medium): a P-256 key advertising `"alg":"ES512"` registers as ES512. Key material comes from the trusted issuer-gated JWKS source, so no attacker leverage; input-hygiene nit.
+* *Empty-array `aud` routes into the azp fallback* (`pipeline/validator/MandatoryClaimsValidator.java:117-119`, `AudienceValidator.java:86-101`, confidence medium): `"aud": []` is "present" for the mandatory-claims check but "absent" for audience matching; with `azpAudienceFallbackEnabled(true)` an ID token with an empty `aud` array is accepted on the strength of a matching `azp`. Defaults (fallback off) reject correctly; opt-in only — but the ordering makes the fallback quietly apply to ID tokens too. Untested (see xref:test-quality-review.adoc[Test Quality Report]).
+* *JWE RSA-OAEP lacks the RFC 7516 §11.5 random-CEK mitigation* (`jwe/JweDecryptor.java:155-192`, confidence low): CEK-decryption failure throws immediately while a wrong-but-decryptable CEK fails later at tag verification — a timing distinguisher. OAEP is strongly resistant and RSA1_5 is rejected outright; hardening-gap level.
+* *Javadoc/observability drift* — `IssuerConfig` usage example calls a nonexistent method (see xref:javadoc-review.adoc[Javadoc Report, J-1]); the `JWKS_KEYS_UPDATED` log call matches its template ("load state: %s") but its content is of limited use — during init it logs `LOADING`, and neither the issuer nor the key set is included (`HttpJwksLoader.java:360`); `IssuerConfigCache.checkAndOptimize()` may snapshot before all async puts land (benign — fallback to the mutable cache); `HttpWellKnownResolver.getLoaderStatus()` has no production caller.
+
+== Areas Verified Solid
+
+The following were explicitly checked and found correct (positive assurance, with the checked locations):
+
+* *Algorithm-confusion defenses*: `alg` allowlist checked in `TokenHeaderValidator.validateAlgorithm` before any key lookup; HS256/384/512 and `none` both un-configurable and rejected case-sensitively (`SignatureAlgorithmPreferences.java:51, 93-106`); `SignatureTemplateManager` refuses anything outside the pre-configured set; RSA↔PS interchange deliberate and cryptographically sound, EC/EdDSA require exact match (`TokenSignatureValidator.java:283-318`).
+* *Header attacks*: `kid` mandatory; embedded `jwk` rejected both at parse and explicitly (CVE-2018-0114); `jku`/`x5u`/`x5c` never parsed — key material can only come from the configured JWKS source; `kid` used solely as a map key (no injection surface).
+* *ECDSA*: psychic-signature range check; strict bounded DER reader; P1363↔DER converters with exact length checks.
+* *RSA key strength*: minimum 2048-bit modulus enforced in one shared place used by both JWKS and DPoP paths (`JwkKeyHandler.java:66, 94-98`).
+* *JWE*: RSA1_5 rejected; alg/enc allowlists before key resolution; verify-then-decrypt for CBC-HS with constant-time `MessageDigest.isEqual`; independent point-on-curve, field-range, and infinity checks before ECDH; CEK/shared-secret zeroization; 256 KB decompression cap plus inner-JWS size recheck; nested JWE rejected; JWE without configuration rejected; AAD is the exact transmitted protected-header ASCII.
+* *Fail-closed posture*: every validator throws; JWKS parse failures produce an empty key set → `KEY_NOT_FOUND`; `IssuerConfigCache` serves only `OK` issuers and throws `NO_ISSUER_CONFIG` otherwise; a background refresh never replaces a good key set with an empty or broken one; discovered-issuer mismatch is a hard failure gated before the advertised `jwks_uri` is fetched, with only trailing-slash normalization.
+* *DoS bounds*: token-size pre-check; per-part decoded size; single-pass structural depth/array scan before DSL-JSON with correct string/escape state tracking; DSL-JSON string-buffer cap; JWKS content size, 50-key cap, 100-char kid cap; streamed HTTP body ceiling with Content-Length pre-reject (`BoundedBodyHandlers`).
+* *SSRF*: egress policy applied to both discovery and JWKS URLs, re-checked on every background refresh; blocks loopback, link-local (cloud metadata), site-local, ULA `fc00::/7`, wildcard, multicast; relaxations are explicit configuration only.
+* *Cache integrity*: SHA-256 cache keys with raw-token equality verification on every hit; expired entries evicted and the request rejected; DPoP proofs and custom validation rules deliberately re-run on cache hits.
+* *Claims*: mandatory-claims per token type; present-but-blank `sub`/`iss` guard; future-`iat` guard; `nbf`; expiry; (fresh-path) token age; all fallbacks (`azp`→aud, `client_id`→azp, aud-optional, sub-optional) default to secure/off with WARN logging; malformed claim values rejected, never skipped.
+* *Signature input*: verified over the exact transmitted `parts[0].parts[1]` — no re-serialization ambiguity (`DecodedJwt.java:145-148`).
+* *Transport primitives*: `EgressPolicy` range coverage; `BoundedBodyHandlers` streaming ceiling with subscription cancel; `HttpWellKnownResolver` single-flight reload with bounded success TTL and never-cached failures.
+* *Support classes*: `AccessTokenCache`/`CachedToken` race handling; `DpopReplayProtection` atomicity; `SecurityEventCounter`; monitor/metrics fast paths; `IssuerConfig` builder fail-closed audience rule; immutable domain token classes; `InboundErrorNormalizer` CWE-117 neutralization.

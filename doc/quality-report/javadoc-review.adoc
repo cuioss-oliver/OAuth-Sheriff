@@ -1,0 +1,182 @@
+= Quality Report: Javadoc Review
+:toc:
+:toclevels: 3
+:sectnums:
+:source-highlighter: highlight.js
+
+Review date: 2026-08-15. Reviewed revision: `d6b927c` (branch `main`).
+Scope: Javadoc in production code (src/main/java) across `token-sheriff-validation`, `token-sheriff-client`, and `token-sheriff-quarkus-parent/*` — prioritizing public API entry points, then broad sampling. Evaluated against the project's Javadoc standards in AGENTS.md (purpose statements, `@param`/`@return`/`@throws`, `@since`, thread-safety notes, usage examples, package-info coverage).
+
+Verification status legend: see xref:adversarial-verification.adoc[Adversarial Verification Report].
+
+== Overall Assessment
+
+Javadoc quality is high overall and largely standards-compliant: `@since` coverage is near-total (only 5 non-API files lack it), an automated `@param`-versus-signature scan across all three modules found zero mismatches, all 115 checked fully-qualified `{@link de.cuioss.*}` targets resolve, and thread-safety and security claims are documented and — where verified — actually delivered by the code. The newer code (the entire `token-sheriff-client` module, DPoP, transport/egress, the Bearer* Quarkus classes) is exemplary, with rationale-bearing, code-accurate documentation.
+
+The weak spot is *usage examples in older validation-module classes*: several would not compile, or would fail at runtime, because they reference removed APIs — a pre-refactor `Optional`-returning parser, a removed `SignatureAlgorithmPreferences` builder, a removed two-argument factory method — and one package-info describes an architecture that no longer exists. Package-info coverage is complete in the client module but has gaps in `token-sheriff-validation` (4 packages) and `token-sheriff-validation-quarkus` (9 packages).
+
+== Findings
+
+[#J-1]
+=== J-1: `IssuerConfig` usage example calls a method that does not exist
+
+[cols="1,4"]
+|===
+|Severity |*major* (public API entry-point example does not compile)
+|Confidence |high
+|Location |`validation/IssuerConfig.java:64-65`
+|===
+
+The example calls `issuerConfig.initJWKSLoader(new SecurityEventCounter())` — `IssuerConfig` has no such method. Only `JwksLoader.initJWKSLoader(SecurityEventCounter)` exists (`JwksLoader.java:97`), invoked internally via `IssuerConfigCache` (`config.getJwksLoader().initJWKSLoader(...)`).
+
+[#J-2]
+=== J-2: `JwksLoaderFactory` example calls `createHttpLoader` with the wrong arity
+
+[cols="1,4"]
+|===
+|Severity |*major*
+|Confidence |high
+|Location |`validation/jwks/JwksLoaderFactory.java:43` vs the actual signature at line 69
+|===
+
+The example passes `(config, securityEventCounter)`; the actual method takes one parameter (`HttpJwksLoaderConfig`), and its own doc even says the counter is initialized separately via `initJWKSLoader()`. The example does not compile.
+
+[#J-3]
+=== J-3: `NonValidatingJwtParser` class examples document a removed `Optional`-returning API and wrong empty/null semantics
+
+[cols="1,4"]
+|===
+|Severity |*major* (three examples neither compile nor describe actual behavior)
+|Confidence |high
+|Location |`validation/pipeline/NonValidatingJwtParser.java:61, 104, 108-116` vs the actual `decode` at line 205; `DecodedJwt.java:63-69`
+|===
+
+Examples show `Optional<DecodedJwt> decode(...)` with "empty result for empty token"; the actual method returns `DecodedJwt` directly and throws `TokenValidationException` for invalid input — an empty token throws, it does not return an empty Optional. An example also calls `jwt.getRawToken()`; `DecodedJwt` is a record whose accessor is `rawToken()`. Mitigating: the class carries `@apiNote This class is internal to Token-Sheriff and not part of the public API.`
+
+[#J-4]
+=== J-4: `algorithmPreferences` example uses a `SignatureAlgorithmPreferences` builder API that does not exist
+
+[cols="1,4"]
+|===
+|Severity |*major*
+|Confidence |high
+|Location |`validation/IssuerConfig.java:756-761`; `validation/security/SignatureAlgorithmPreferences.java:38-106`
+|===
+
+The example shows `SignatureAlgorithmPreferences.builder().preferredAlgorithms(...).allowedAlgorithms(...).build()` — the class has no builder and no "allowedAlgorithms" concept; only a no-arg constructor and a `List<String>` constructor exist, and the rejected-algorithms list is a fixed private constant. The example does not compile.
+
+[#J-5]
+=== J-5: `DiscoverableTokenValidationRule` example uses nonexistent `ClaimName.of(String)`
+
+[cols="1,4"]
+|===
+|Severity |*major*
+|Confidence |high
+|Location |`token-sheriff-validation-quarkus/.../DiscoverableTokenValidationRule.java` (class Javadoc); `ClaimName.java:211`; `TokenContent.java:68`
+|===
+
+`token.getClaimOption(ClaimName.of("tenant_id"))` — `ClaimName` is an enum offering only `fromString(String) → Optional<ClaimName>`; there is no `of(String)`, and `getClaimOption` accepts only enum constants ("tenant_id" is not one). The canonical custom-claim access is `token.getClaims().get("tenant_id")`. The rest of the example (the `TokenValidationRule` lambda shape, `EventType.CUSTOM_RULE_REJECTED`) is accurate.
+
+[#J-6]
+=== J-6: Three usage examples build `HttpJwksLoaderConfig` in a way that throws at runtime
+
+[cols="1,4"]
+|===
+|Severity |*major* (examples compile but fail on `build()`)
+|Confidence |high
+|Location |`validation/TokenValidator.java:76-79`; `validation/jwks/http/package-info.java:95-98`; `validation/jwks/JwksLoaderFactory.java:38-41`; enforcement at `HttpJwksLoaderConfig.java:720-722`
+|===
+
+All three examples use direct `jwksUrl(...)` without `.issuerIdentifier(...)` — `build()` enforces "Issuer identifier is mandatory when using direct JWKS configuration" and throws. (The `IssuerConfig.java:58-61` example uses `wellKnownUrl()` and is fine.)
+
+[#J-7]
+=== J-7: Stale architecture description in the `jwks/http` package-info — three named components do not exist
+
+[cols="1,4"]
+|===
+|Severity |*major* (package documentation describes a removed design)
+|Confidence |high
+|Location |`validation/jwks/http/package-info.java:28-32, 44-79, 87`
+|===
+
+The package-info names `JwksHttpClient`, `JwksCacheManager`, and `BackgroundRefreshManager` — plus a full "Component Interactions" walkthrough of these classes and an "Adaptive caching" claim. A repo-wide search finds none of them; the package contains only `HttpJwksLoader`, composed from cui-http `ETagAwareHttpAdapter`/`ResilientHttpAdapter`. The "adaptive caching" claim directly contradicts `HttpJwksLoaderConfig.java:44-45` ("Complex caching parameters (maxCacheSize, adaptiveWindowSize) have been removed for simplification").
+
+[#J-8]
+=== J-8: Documented DPoP replay-cache TTL default is wrong (300 vs actual 360)
+
+[cols="1,4"]
+|===
+|Severity |minor (code is stricter than documented)
+|Confidence |high
+|Location |`token-sheriff-validation-quarkus/.../config/JwtPropertyKeys.java` (`DPOP_NONCE_CACHE_TTL_SECONDS`, ~318-326); `DpopConfig.java:58, 191-192`; `IssuerConfigResolver.java:406-408`
+|===
+
+The property Javadoc says "Default value is 300 (5 minutes)"; the resolver falls back to `DEFAULT_NONCE_CACHE_TTL_SECONDS = 360` (deliberately `proofMaxAge 300 + clockSkew 60`), and `DpopConfig.build()` silently raises any configured TTL below `proofMaxAgeSeconds + 60` to that minimum — even an explicit 300 becomes 360. Same defect in the AsciiDoc config reference (xref:documentation-review.adoc#D-8[D-8]).
+
+[#J-9]
+=== J-9: `algorithmPreferences` prose omits EdDSA from the documented defaults and overstates configurability
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`validation/IssuerConfig.java:747-752`; `SignatureAlgorithmPreferences.java:84`
+|===
+
+The documented default list omits EdDSA (present in the code's defaults), and the claim that preferences can be used for "blacklisting weak ones" is wrong — the rejected list (HS*/`none`) is a fixed static constant, not user-configurable.
+
+[#J-10]
+=== J-10: Bearer-token extraction docs describe the Authorization-header path only, omitting the supported cookie mode
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |medium
+|Location |`token-sheriff-validation-quarkus/.../producer/BearerTokenProducer.java:48-51, 128-147`; similar prose in `BearerToken.java:93` and `BearerAuth.java:128`
+|===
+
+All three class-level docs say tokens are extracted "from the HTTP Authorization header", but the constructor explicitly supports `sheriff.token.header=Cookie` with a configurable cookie name (documented in `JwtPropertyKeys`).
+
+[#J-11]
+=== J-11: Missing `@since` on 5 production files
+
+[cols="1,4"]
+|===
+|Severity |minor
+|Confidence |high
+|Location |`TokenSheriffClientProcessor.java`, `TokenSheriffProcessor.java` (deployment modules), and 3 integration-test-app classes under `token-sheriff-quarkus-integration-tests/src/main/java/`
+|===
+
+All other ~230 production files carry `@since 1.0`.
+
+[#J-12]
+=== J-12: Small staleness nits
+
+[cols="1,4"]
+|===
+|Severity |info
+|Confidence |medium/low
+|Location |`domain/claim/mapper/StringSplitterMapper.java` (class Javadoc); `validation/package-info.java:17-18`
+|===
+
+* The `StringSplitterMapper` example calls `commaMapper.map(jsonObject, "roles")`; the parameter type is `MapRepresentation` — the variable name is a leftover from the Jakarta-JSON era.
+* The validation root package-info still says "…in a Portal environment" — legacy phrasing from the library's cui-portal origin; the module is framework-agnostic.
+
+== Package-info Coverage (verified by directory enumeration)
+
+Missing `package-info.java`:
+
+* `token-sheriff-validation` (4 of ~22 packages): `validation.dpop`, `validation.exception`, `validation.jwe`, `validation.util`
+* `token-sheriff-validation-quarkus` (9 of 16 packages — the largest gap; `producer` and `validation` contain public API): `quarkus.health`, `quarkus.jwe`, `quarkus.logging`, `quarkus.metrics`, `quarkus.observability`, `quarkus.producer`, `quarkus.runtime`, `quarkus.servlet`, `quarkus.validation`
+* `token-sheriff-quarkus-integration-tests`: both packages (internal test app — arguably out of scope)
+
+Complete coverage: `token-sheriff-client` (10/10, `@NullMarked`), `token-sheriff-client-quarkus` (2/2), both `-deployment` modules, and validation-quarkus's `annotation`/`config`/`error`/`interceptor`/`mapper`/`mapper.keycloak` packages.
+
+== Areas Verified Accurate
+
+* *TokenValidator*: builder-method names in the example (`parserConfig`, `issuerConfig` via `@Singular`, `monitorConfig`, `cacheConfig`), `AccessTokenRequest.of`/`IdTokenRequest.of`/`RefreshTokenRequest.of`, `getSecurityEventCounter`/`getPerformanceMonitor`, and the null-semantics comments for monitor/cache config all match the constructor logic. The thread-safety claim is consistent with immutable post-construction wiring. Only defect: the embedded `HttpJwksLoaderConfig` snippet (J-6).
+* *AccessTokenCacheConfig*: documented defaults (maxSize 1000, eviction 10 s), `disabled()`, `defaultConfig()`, and the constructor example all match.
+* *TokenValidatorMonitorConfig / Monitor*: the `@Singular` example is valid; the documented `IllegalArgumentException` for non-positive window size is actually enforced.
+* *Bearer classes*: every example method call exists (`isNotSuccessfullyAuthorized`, `createErrorResponse`, `getAccessTokenContent`, …); the documented 401-for-scopes / 403-for-roles-groups split matches the implementation, with an explicit RFC 9470 design-decision comment.
+* *token-sheriff-client module*: `ClientConfiguration` (defaults, validation `@throws`, `toString`/`equals` exclusions including the documented SSLContext reload caveat), `ClientConfigMapper`/`ClientRuntimeConfig` (defaults `client_secret_basic`, `false`, 64 KiB — all match), `DpopProofGenerator` (concurrency claim backed by a synchronized LRU jti map; documented `IllegalStateException` on jti reuse implemented), `TokenLifecycleManager`, `AuthorizationCodeFlow` — spot-checked in depth, no discrepancies.
+* *Cross-cutting*: all 115 fully-qualified `{@link de.cuioss.*}` targets resolve; the automated `@param`-versus-signature scan found 0 mismatches; `SecurityEventCounter`'s thread-safety claim is backed by `ConcurrentHashMap` + `AtomicLong`; the `JwksLoader` interface example matches real signatures; pipeline-validator `@throws TokenValidationException` claims match the implementations.
