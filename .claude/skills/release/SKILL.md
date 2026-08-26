@@ -67,6 +67,37 @@ gh pr list --repo cuioss/TokenSheriff --state open --json number,title,isDraft
 
 Also confirm the working tree is clean (`git status --porcelain`) before branching.
 
+### Step 2b — Gate on smallrye/Quarkus alignment (do NOT skip)
+
+```bash
+python3 .claude/skills/release/check-quarkus-alignment.py --repo . --check-resolved
+```
+
+| exit | meaning |
+|------|---------|
+| 0 | aligned — proceed |
+| 1 | **misaligned** — stop, fix, restart |
+| 2 | **could not determine** — also a stop. An unresolvable check is never a pass. |
+
+`version.quarkus` here is a **project-owned pin, not an override**: the parent chain declares
+no Quarkus version at all, and it cannot — Maven does not propagate properties from
+*imported* BOMs, and `quarkus-maven-plugin` needs the value as a build extension. This
+project's Quarkus therefore moves independently of `cuioss-parent-pom`, and nothing upstream
+validates it.
+
+Quarkus' deployment classes are compiled against one specific smallrye-config release, so a
+newer version — even an internally coherent one — fails augmentation with
+`failed to access io.smallrye.config.ConfigMappingLoader$ConfigMappingImplementation`. That
+shipped twice through `cuioss-parent-pom` and cost five weeks of red builds the first time.
+The `requireSameVersions` enforcer guard cannot catch it: nothing is split, so it stays
+correctly silent.
+
+`--check-resolved` asserts every `io.smallrye.config` artifact actually resolves to what
+**this** project's Quarkus was built against, catching a split family as well as a wrong one.
+
+Keep the script in sync with `cuioss-parent-pom`'s copy; there is no shared parent to inherit
+it from.
+
 ### Step 3 — Pull current main
 
 ```bash
