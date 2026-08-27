@@ -6,24 +6,78 @@
     "pm-documents"
   ],
   "modules": {
-    "benchmark-core": {},
-    "benchmark-integration-wrk": {},
-    "benchmarking": {},
-    "benchmarking-common": {},
-    "documentation": {},
-    "e-2-e-playwright-maven": {},
-    "e-2-e-playwright-npm": {},
-    "token-sheriff-bom": {},
-    "token-sheriff-client": {},
-    "token-sheriff-client-quarkus": {},
-    "token-sheriff-client-quarkus-deployment": {},
-    "token-sheriff-parent": {},
-    "token-sheriff-quarkus-integration-tests": {},
-    "token-sheriff-quarkus-parent": {},
-    "token-sheriff-validation": {},
-    "token-sheriff-validation-quarkus": {},
-    "token-sheriff-validation-quarkus-deployment-maven": {},
-    "token-sheriff-validation-quarkus-deployment-npm": {}
+    "benchmark-core": {
+      "description": "JMH micro-benchmarks for the token-sheriff-validation library. Measures in-process token validation throughput and latency across standard and delegate scenarios, with JFR-instrumented benchmark variants.",
+      "generation": {}
+    },
+    "benchmark-integration-wrk": {
+      "description": "WRK-based HTTP load benchmarks for the deployed OAuth/JWT validation endpoints, with integration-test infrastructure and shell benchmark/ablation scripts orchestrating token fetch and endpoint stress runs.",
+      "generation": {}
+    },
+    "benchmarking": {
+      "description": "Aggregator (parent) module for all benchmarking-related modules, including the JMH library benchmarks, WRK integration benchmarks, and shared benchmarking infrastructure.",
+      "generation": {}
+    },
+    "benchmarking-common": {
+      "description": "Shared benchmarking infrastructure with JMH integration. Provides the benchmark runner, metrics collection and converters, JFR support, and report/output generation used to produce artifacts during benchmark execution.",
+      "generation": {}
+    },
+    "documentation": {
+      "description": "Project-level documentation module holding the AsciiDoc specifications and READMEs for the commons, validation, client and OIDC capability areas, including the multi-plan OIDC restructure/implementation docs.",
+      "generation": {}
+    },
+    "e-2-e-playwright-maven": {
+      "description": "Maven-side wrapper for the Playwright end-to-end tests of the Token-Sheriff Quarkus Dev-UI. Wires the npm Playwright suite into the Maven reactor via the e2e-tests profile and dev-environment start/stop scripts.",
+      "generation": {}
+    },
+    "e-2-e-playwright-npm": {
+      "description": "Playwright end-to-end test suite for the Token-Sheriff Quarkus Dev-UI. Verifies status/config views, the token debugger and WCAG accessibility against a live dev environment, using Keycloak-issued tokens.",
+      "generation": {}
+    },
+    "token-sheriff-bom": {
+      "description": "Bill of Materials (BOM) that centralizes and aligns dependency versions for all Token-Sheriff modules so consumers import a single managed version set.",
+      "generation": {}
+    },
+    "token-sheriff-client": {
+      "description": "Framework-agnostic OIDC/OAuth client engine \u2014 the outbound counterpart to token-sheriff-validation. Intended to add client-side flows (token retrieval, userinfo, revocation, introspection, end-session, PAR) on the commons transport base. Currently a wired, building skeleton with no functional flows yet (Plan 05).",
+      "generation": {}
+    },
+    "token-sheriff-client-quarkus": {
+      "description": "Runtime module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Builds on the token-sheriff-validation-quarkus extension and the framework-agnostic token-sheriff-client engine. Wired, empty skeleton (Plan 05) with no functional content yet.",
+      "generation": {}
+    },
+    "token-sheriff-client-quarkus-deployment": {
+      "description": "Deployment (build-time) module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Registers the token-sheriff-client feature during augmentation. Wired, empty skeleton (Plan 05).",
+      "generation": {}
+    },
+    "token-sheriff-parent": {
+      "description": "Root reactor and parent POM for the Token-Sheriff project. Aggregates all modules (validation core, client, Quarkus extensions, benchmarking, docs and E2E) and centralizes shared build configuration, inheriting from cui-java-parent.",
+      "generation": {}
+    },
+    "token-sheriff-quarkus-integration-tests": {
+      "description": "Integration tests for the Token-Sheriff Quarkus extension. Stands up test endpoints and exercises token validation, bearer-token, health, security and API behavior against a real Keycloak, including native-container testing with HTTPS.",
+      "generation": {}
+    },
+    "token-sheriff-quarkus-parent": {
+      "description": "Parent (aggregator) module for the Token-Sheriff Quarkus integration. Groups the validation and client runtime/deployment extensions, integration tests and E2E Playwright modules, and centralizes their shared build configuration (including SecurityEvents-to-Micrometer integration).",
+      "generation": {}
+    },
+    "token-sheriff-validation": {
+      "description": "Core library for offline OAuth/JWT token validation in multi-issuer environments. Provides the TokenValidator entry point, issuer configuration, staged validation pipelines for access/id/refresh tokens, JWKS loading, signature verification, JWE decryption, DPoP proof validation, and token caching, using standard JDK cryptographic providers.",
+      "generation": {}
+    },
+    "token-sheriff-validation-quarkus": {
+      "description": "Runtime module of the Quarkus extension for OAuth/JWT token validation. Exposes token-sheriff-validation as CDI producers, maps YAML/MicroProfile configuration to issuer configs, integrates SecurityEvents into Micrometer metrics, adds SmallRye health checks, a bearer-token servlet layer, JWE support and error mapping.",
+      "generation": {}
+    },
+    "token-sheriff-validation-quarkus-deployment-maven": {
+      "description": "Build-time deployment module of the Quarkus validation extension. Provides the extension processor/build steps and ships the Dev-UI web components (JWT debugger and status/config views) that surface validation state during development.",
+      "generation": {}
+    },
+    "token-sheriff-validation-quarkus-deployment-npm": {
+      "description": "npm/JavaScript side of the validation Quarkus deployment module. Builds, lints, formats and unit-tests (Jest) the Lit-based Dev-UI web components (qwc-jwt-debugger, qwc-jwt-status-config) shipped by the extension.",
+      "generation": {}
+    }
   },
   "name": "TokenSheriff"
 }
