@@ -472,6 +472,6 @@ public class TestRealm {
      *                        provider, {@code null} when the provider omitted it
      */
     public record TokenResponse(String accessToken, String idToken, String refreshToken,
-            Integer expiresInSeconds) {
+    Integer expiresInSeconds) {
     }
 }

@@ -36,12 +36,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.function.Supplier;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Drives the production {@link RefreshFlow} against the real Keycloak container through an assembled
@@ -144,7 +139,9 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
     private static <T> T drive(String leg, Supplier<T> action) {
         try {
             return action.get();
-        } catch (RuntimeException e) {
+        }
+        /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
+        catch (RuntimeException e) {
             LOGGER.debug(e, "Production refresh path failed during %s", leg);
             throw new AssertionError("Production refresh path failed during " + leg
                     + "; production frame: " + productionFrame(e), e);
