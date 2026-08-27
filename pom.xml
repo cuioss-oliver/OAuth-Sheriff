@@ -11,6 +11,10 @@
     <artifactId>token-sheriff-parent</artifactId>
     <version>0.9.5-SNAPSHOT</version>
     <packaging>pom</packaging>
+    <!-- Must be declared: <inceptionYear> is inherited, and the license plugin binds
+         the copyright ${year} to it. Without this, this project would report
+         cui-parent-pom's 2022 and restamp every header on each -Ppre-commit run. -->
+    <inceptionYear>2025</inceptionYear>
     <name>Token-Sheriff Parent</name>
     <description>A comprehensive framework for validating OAuth/JWT tokens in multi-issuer environments.
         The module provides robust token parsing, validation, and management capabilities
