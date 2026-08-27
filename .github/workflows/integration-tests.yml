@@ -20,6 +20,13 @@ jobs:
     # Multi-IDP tests (Keycloak + Dex + Zitadel) — superset that includes standard integration tests
     uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@146d2d377eea7ffae0c73f06df8087a0948a534a # v0.22.0
     with:
+      # Pinned rather than inherited. This job's five most recent real runs took
+      # 6m04s-7m35s; the reusable workflow's default is 20, which is what cancelled
+      # API-Sheriff's 18-minute integration job. Spinning up three IDPs (Keycloak,
+      # Dex, Zitadel) is the kind of work that grows, so the value is stated here
+      # instead of tracking a default that can move underneath it. Matches the
+      # sibling e2e-tests caller.
+      timeout-minutes: 30
       report-name: token-sheriff-multi-idp-tests
       maven-args-input: |
         install -DskipTests -DskipITs -pl token-sheriff-validation,token-sheriff-client,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus-deployment,token-sheriff-quarkus-parent/token-sheriff-client-quarkus,token-sheriff-quarkus-parent/token-sheriff-client-quarkus-deployment -am
