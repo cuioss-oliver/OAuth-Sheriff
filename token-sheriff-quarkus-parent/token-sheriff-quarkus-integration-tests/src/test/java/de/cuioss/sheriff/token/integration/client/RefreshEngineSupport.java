@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.token.integration.client;
 
+import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
 import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
@@ -28,6 +29,7 @@ import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenValidator;
+import org.jspecify.annotations.Nullable;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
@@ -69,6 +71,18 @@ final class RefreshEngineSupport {
     /** Externally reachable token endpoint of the integration realm. */
     static final String TOKEN_ENDPOINT =
             KeycloakUrlSupport.EXTERNAL_BASE + REALM_PATH + "/protocol/openid-connect/token";
+
+    /**
+     * Token endpoint as the realm itself advertises it, on the Docker-internal authority.
+     * <p>
+     * This URL is never connected to from the test JVM — it is the {@code aud} a {@code private_key_jwt}
+     * client assertion must carry. Keycloak matches the assertion audience against its own
+     * issuer-derived endpoint URL, so an assertion audienced at {@link #TOKEN_ENDPOINT} (the loopback
+     * base the request is actually sent to) is rejected with {@code invalid_client / Invalid token
+     * audience}. The two-base reconciliation therefore reaches into the client assertion as well.
+     */
+    static final String INTERNAL_TOKEN_ENDPOINT =
+            KeycloakUrlSupport.INTERNAL_BASE + REALM_PATH + "/protocol/openid-connect/token";
 
     /** Externally reachable RFC 7009 revocation endpoint of the integration realm. */
     static final String REVOCATION_ENDPOINT =
@@ -132,11 +146,25 @@ final class RefreshEngineSupport {
      *         and carrying the chain-validating trust material
      */
     static ClientConfiguration clientConfiguration(String clientId, String clientSecret) {
+        return clientConfiguration(clientId, clientSecret, ClientAuthMethod.CLIENT_SECRET_BASIC);
+    }
+
+    /**
+     * @param clientId     the realm client to authenticate as
+     * @param clientSecret the client's shared secret, or {@code null} for the key-based methods
+     *                     ({@code private_key_jwt} / {@code tls_client_auth}) where no shared secret
+     *                     exists
+     * @param authMethod   the client-authentication method the configuration declares
+     * @return a configuration bound to the realm's internal issuer identity and carrying the
+     *         chain-validating trust material
+     */
+    static ClientConfiguration clientConfiguration(String clientId, @Nullable String clientSecret,
+            ClientAuthMethod authMethod) {
         return ClientConfiguration.builder()
                 .issuer(KeycloakUrlSupport.INTERNAL_ISSUER)
                 .clientId(clientId)
                 .clientSecret(clientSecret)
-                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .authMethod(authMethod)
                 .scope("openid")
                 .scope("profile")
                 .scope("email")
@@ -211,8 +239,23 @@ final class RefreshEngineSupport {
      * @return the wired refresh flow
      */
     static RefreshFlow refreshFlow(ClientConfiguration configuration, TokenValidationBridge accessBridge) {
+        return refreshFlow(configuration, accessBridge, clientAuthentication(configuration));
+    }
+
+    /**
+     * Assembles an unconstrained refresh flow over a caller-chosen client-authentication strategy, so
+     * the refresh leg can be driven through any of the engine's {@code ClientAuthentication}
+     * implementations rather than only the shared-secret Basic form.
+     *
+     * @param configuration        the client configuration
+     * @param accessBridge         the access-token validation bridge
+     * @param clientAuthentication the strategy to present at the token endpoint
+     * @return the wired refresh flow
+     */
+    static RefreshFlow refreshFlow(ClientConfiguration configuration, TokenValidationBridge accessBridge,
+            ClientAuthentication clientAuthentication) {
         return new RefreshFlow(configuration, new TokenEndpointClient(configuration), accessBridge,
-                clientAuthentication(configuration));
+                clientAuthentication);
     }
 
     /**

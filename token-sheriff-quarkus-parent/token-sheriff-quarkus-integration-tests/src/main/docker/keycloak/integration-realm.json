@@ -126,6 +126,29 @@
         "backchannel.logout.revoke.offline.tokens": "false",
         "access.token.lifespan": "35"
       }
+    },
+    {
+      "clientId": "private-key-jwt-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-jwt",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "token.endpoint.auth.signing.alg": "RS256",
+        "use.jwks.string": "true",
+        "jwks.string": "{\"keys\":[{\"kty\":\"RSA\",\"use\":\"sig\",\"kid\":\"private-key-jwt-test-key\",\"alg\":\"RS256\",\"n\":\"tUNFY4VKlUlPX8Nc8Zi5JGmOv3w9krzY-Hhx0fHnddWFk3FYxkw9O9riMWFrQbc33LOTEOWnws5xLXQGfZibd31h6QZoQ1E3ACUf6Uaib6rAXRvpBLO6V_E3-JBkOwigUvykp_Gx1eYSx5JUZzNdkmUi1NjH0G2tM5rK5yTHU24YYPL5_j2q92jKhy1nEZJHHHfG_OE4fcXylEX1zaVLKZ5ulfYSNzITVdAs0DHq_gNA_WIHBp3xVa2BNGyWYXjjxo9B2QnpNtjrQClH6F4Czd-m1NbE2XwtMliy5yxrqTlcdmLCoR11k1z0pLj1o-ivp-mGYqqfgQwOhQ9cZp4cEw\",\"e\":\"AQAB\"}]}"
+      }
     }
   ],
   "users": [

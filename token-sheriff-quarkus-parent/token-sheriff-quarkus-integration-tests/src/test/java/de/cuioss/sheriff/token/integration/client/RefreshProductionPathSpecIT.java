@@ -18,6 +18,8 @@ package de.cuioss.sheriff.token.integration.client;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler;
+import de.cuioss.sheriff.token.client.lifecycle.StoredToken;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
@@ -33,9 +35,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.function.Supplier;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -64,6 +69,15 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
     private static final String INTEGRATION_CLIENT_SECRET = "integration-secret";
     private static final String DPOP_CLIENT_ID = "dpop-client";
     private static final String DPOP_CLIENT_SECRET = "dpop-secret";
+    private static final String FAST_CLIENT_ID = "refresh-fast-client";
+    private static final String FAST_CLIENT_SECRET = "refresh-fast-secret";
+
+    /**
+     * Bounded wait for the {@code refresh-fast-client}'s 35-second access token to actually expire.
+     * Generous enough to absorb container and CI jitter, still far below the refresh token's own
+     * 1800-second lifetime, so the refresh leg that follows is genuinely redeemable.
+     */
+    private static final Duration EXPIRY_BUDGET = Duration.ofSeconds(90);
 
     @Test
     @DisplayName("Should rotate the refresh token and return a validated access token through RefreshFlow")
@@ -124,6 +138,46 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
 
         assertTrue(claimsOf(rotation.accessToken().getRawToken()).contains(jktClaim(proofGenerator)),
                 "the rotated access token must stay bound to the same proof key (cnf.jkt continuity)");
+    }
+
+    @Test
+    @DisplayName("Should redeem a refresh token whose access token has already expired")
+    void shouldRefreshAfterTheAccessTokenHasExpired() {
+        TestRealm.TokenResponse acquired = TestRealm.createFastRefreshRealm().obtainValidToken();
+        assertNotNull(acquired.refreshToken(), "the fast-expiry client must issue a refresh token");
+        assertNotNull(acquired.expiresInSeconds(), "Keycloak must report the access-token lifetime");
+
+        StoredToken bundle = new StoredToken(acquired.accessToken(), acquired.refreshToken(),
+                acquired.idToken(), null, Instant.now().plusSeconds(acquired.expiresInSeconds()));
+        RefreshScheduler scheduler = new RefreshScheduler();
+
+        assertFalse(scheduler.needsRefresh(bundle, Instant.now()),
+                "a freshly issued 35-second token is not yet inside the 30-second refresh lead");
+
+        await("access token expiry")
+                .atMost(EXPIRY_BUDGET)
+                .pollInterval(Duration.ofSeconds(1))
+                .until(() -> bundle.isExpired(Instant.now()));
+
+        ClientConfiguration configuration =
+                RefreshEngineSupport.clientConfiguration(FAST_CLIENT_ID, FAST_CLIENT_SECRET);
+        TokenValidationBridge accessBridge =
+                RefreshEngineSupport.accessTokenBridge(RefreshEngineSupport.tokenValidator());
+        RefreshFlow refreshFlow = RefreshEngineSupport.refreshFlow(configuration, accessBridge);
+
+        RotationResult rotation = drive("expiry-driven refresh_token exchange",
+                () -> refreshFlow.refresh(RefreshEngineSupport.providerMetadata(), acquired.refreshToken()));
+
+        assertAll("expiry-driven refresh",
+                () -> assertTrue(scheduler.needsRefresh(bundle, Instant.now()),
+                        "the presented bundle must have been past its refresh window at redemption time"),
+                () -> assertTrue(rotation.rotated(), "the expired-access-token refresh must still rotate"),
+                () -> assertNotEquals(acquired.accessToken(), rotation.accessToken().getRawToken(),
+                        "the rotation must replace the expired access token"),
+                () -> assertNotEquals(acquired.refreshToken(), rotation.refreshToken(),
+                        "the rotated refresh token must differ from the redeemed one"),
+                () -> assertTrue(rotation.accessTokenExpiresInSeconds() > 0,
+                        "the refreshed access token must carry a fresh, positive lifetime"));
     }
 
     /**

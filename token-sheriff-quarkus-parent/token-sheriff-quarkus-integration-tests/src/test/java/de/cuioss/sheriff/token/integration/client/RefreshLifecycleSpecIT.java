@@ -17,7 +17,7 @@ package de.cuioss.sheriff.token.integration.client;
 
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
-import de.cuioss.sheriff.token.client.dpop.ConstraintBinding;
+import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.lifecycle.InMemoryTokenStore;
 import de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler;
@@ -27,6 +27,7 @@ import de.cuioss.sheriff.token.client.lifecycle.TokenLifecycleManager;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.integration.BaseIntegrationTest;
 import de.cuioss.sheriff.token.integration.TestRealm;
 import de.cuioss.sheriff.token.validation.TokenValidator;
@@ -50,9 +51,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>
  * The lifecycle manager is where refresh stops being a single token exchange and becomes session
  * state: the proactive-refresh window, rotation applied to the stored bundle, the OIDC Core §12.2
- * ID-token carry-forward, client-side refresh-token reuse detection with RFC 7009 revocation, and the
- * bearer-downgrade fail-close for a sender-constrained bundle. Each of those is exercised here
- * against a live authorization server rather than a stubbed token endpoint.
+ * ID-token carry-forward, and client-side refresh-token reuse detection with RFC 7009 revocation —
+ * including the best-effort revocation's failure branch. Each of those is exercised here against a
+ * live authorization server rather than a stubbed token endpoint.
+ * <p>
+ * The sender-constrained half of the lifecycle contract lives in
+ * {@link RefreshConstraintLifecycleSpecIT}, which drives a real DPoP-bound session through both the
+ * fail-closed coordinator and the documented confirmed-binding {@code applyRefresh} path.
  * <p>
  * The realm's {@code refresh-fast-client} issues a 35-second access token, which is inside the
  * scheduler's 30-second refresh lead within ~5 seconds of issue — short enough for the proactive
@@ -91,7 +96,7 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
     @DisplayName("Should enter the proactive-refresh window within the fast-expiry lifetime")
     void shouldEnterProactiveRefreshWindow() {
         String sessionId = newSessionId();
-        manager.store(sessionId, acquireBundle(null));
+        manager.store(sessionId, acquireBundle());
 
         assertFalse(manager.needsRefresh(sessionId, Instant.now()),
                 "a freshly issued 35-second token is not yet inside the 30-second refresh lead");
@@ -106,7 +111,7 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
     @DisplayName("Should apply the rotation to the session and carry the refreshed ID token forward")
     void shouldApplyRotationToTheSession() {
         String sessionId = newSessionId();
-        StoredToken original = acquireBundle(null);
+        StoredToken original = acquireBundle();
         manager.store(sessionId, original);
 
         StoredToken refreshed = refreshSession(sessionId).orElseThrow(
@@ -127,7 +132,7 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
     @DisplayName("Should detect refresh-token reuse, revoke the family, and clear the session")
     void shouldDetectRefreshTokenReuse() {
         String sessionId = newSessionId();
-        StoredToken original = acquireBundle(null);
+        StoredToken original = acquireBundle();
         manager.store(sessionId, original);
 
         assertTrue(refreshSession(sessionId).isPresent(), "the first refresh must succeed");
@@ -147,33 +152,61 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("Should fail closed when a sender-constrained session refreshes to a bearer token")
-    void shouldFailCloseOnBearerDowngrade() {
+    @DisplayName("Should still clear the session and surface the reuse when revocation itself fails")
+    void shouldFailClosedWhenRevocationEndpointFails() {
         String sessionId = newSessionId();
-        manager.store(sessionId, acquireBundle(ConstraintBinding.dpop("a-stored-proof-key-thumbprint")));
+        StoredToken original = acquireBundle();
+        manager.store(sessionId, original);
 
-        assertThrows(IllegalStateException.class, () -> refreshSession(sessionId),
-                "a sender-constrained bundle must refuse a refreshed token that carries no cnf binding");
+        assertTrue(refreshSession(sessionId).isPresent(), "the first refresh must succeed");
+        manager.store(sessionId, original);
+
+        assertThrows(ClientProtocolException.class, () -> refreshSession(sessionId, unreachableRevocation()),
+                "a failing revocation must not mask the reuse signal to the caller");
+
+        assertAll("best-effort revocation does not weaken the fail-closed clear",
+                () -> assertEquals(List.of("refresh_token"), revocationClient.recordedTokenTypeHints(),
+                        "the revocation must have been attempted before it failed"),
+                () -> assertEquals(1, revocationClient.recordedFailureCount(),
+                        "the attempt must have genuinely failed — otherwise the swallow branch is untested"),
+                () -> assertTrue(manager.get(sessionId).isEmpty(),
+                        "the session must still be cleared after a failed revocation"));
     }
 
     /**
      * Acquires a real token bundle from the fast-expiry client and wraps it as a stored session bundle.
      *
-     * @param constraintBinding the sender-constraint to record on the bundle, or {@code null} for a
-     *                          plain bearer session
      * @return the stored bundle, with the expiry derived from the provider's {@code expires_in}
      */
-    private static StoredToken acquireBundle(ConstraintBinding constraintBinding) {
+    private static StoredToken acquireBundle() {
         TestRealm.TokenResponse acquired = TestRealm.createFastRefreshRealm().obtainValidToken();
         assertNotNull(acquired.refreshToken(), "the fast-expiry client must issue a refresh token");
         assertNotNull(acquired.expiresInSeconds(), "Keycloak must report the access-token lifetime");
         return new StoredToken(acquired.accessToken(), acquired.refreshToken(), acquired.idToken(),
-                constraintBinding, Instant.now().plusSeconds(acquired.expiresInSeconds()));
+                null, Instant.now().plusSeconds(acquired.expiresInSeconds()));
     }
 
     private Optional<StoredToken> refreshSession(String sessionId) {
-        return manager.refresh(sessionId, RefreshEngineSupport.providerMetadata(), refreshFlow,
-                revocationClient, idBridge, clientAuthentication);
+        return refreshSession(sessionId, RefreshEngineSupport.providerMetadata());
+    }
+
+    private Optional<StoredToken> refreshSession(String sessionId, ProviderMetadata metadata) {
+        return manager.refresh(sessionId, metadata, refreshFlow, revocationClient, idBridge,
+                clientAuthentication);
+    }
+
+    /**
+     * Provider metadata whose revocation endpoint resolves to a real, reachable URL on the container
+     * that answers a POST with a non-success status. Pointing at a live-but-wrong path (rather than an
+     * unroutable host) keeps the failure inside the production {@code RevocationClient}'s status check
+     * and out of connect-timeout territory, so the swallow branch is driven promptly and deterministically.
+     *
+     * @return metadata carrying the working token endpoint and a failing revocation endpoint
+     */
+    private static ProviderMetadata unreachableRevocation() {
+        ProviderMetadata metadata = RefreshEngineSupport.providerMetadata();
+        metadata.revocationEndpoint = RefreshEngineSupport.REVOCATION_ENDPOINT + "-does-not-exist";
+        return metadata;
     }
 
     private static String newSessionId() {
@@ -187,6 +220,7 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
     private static final class RecordingRevocationClient extends RevocationClient {
 
         private final List<String> tokenTypeHints = new ArrayList<>();
+        private final List<TransportException> failures = new ArrayList<>();
 
         RecordingRevocationClient(ClientConfiguration configuration) {
             super(configuration);
@@ -196,11 +230,22 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
         public void revoke(String revocationEndpoint, String token, String tokenTypeHint,
                 ClientAuthentication clientAuthentication) {
             tokenTypeHints.add(tokenTypeHint);
-            super.revoke(revocationEndpoint, token, tokenTypeHint, clientAuthentication);
+            try {
+                super.revoke(revocationEndpoint, token, tokenTypeHint, clientAuthentication);
+            } catch (TransportException failure) {
+                // Recorded, then rethrown unchanged: the lifecycle manager's best-effort swallow is the
+                // behaviour under test, so this must not absorb the failure on its behalf.
+                failures.add(failure);
+                throw failure;
+            }
         }
 
         List<String> recordedTokenTypeHints() {
             return List.copyOf(tokenTypeHints);
+        }
+
+        int recordedFailureCount() {
+            return failures.size();
         }
     }
 }
