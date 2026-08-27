@@ -49,6 +49,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * the refresh token. The container uses a self-signed certificate, so the exchange runs against a
  * trust-all TLS context (integration-test scope only), mirroring {@link BaseIntegrationTest}'s
  * relaxed HTTPS posture.
+ * <p>
+ * This spec is deliberately <em>wire level</em>: it addresses the token endpoint with a raw
+ * {@link HttpRequest} and therefore asserts what the authorization server does, not what the client
+ * engine does. Production-path coverage — the engine's own {@code RefreshFlow} driven against the
+ * same container — lives in {@link RefreshProductionPathSpecIT}.
  */
 @DisplayName("refresh_token grant against real Keycloak")
 class RefreshSpecIT extends BaseIntegrationTest {
@@ -76,10 +81,14 @@ class RefreshSpecIT extends BaseIntegrationTest {
         HttpResponse<String> response = send(form, headers);
         LOGGER.debug("refresh_token response: %s", response.body());
 
+        String rotatedAccessToken = extractStringField(response.body(), "access_token");
+        String rotatedRefreshToken = extractStringField(response.body(), "refresh_token");
         assertAll("refresh_token response",
                 () -> assertEquals(200, response.statusCode(), "Keycloak must accept the refresh_token grant"),
-                () -> assertTrue(response.body().contains("access_token"), "response carries a fresh access_token"),
-                () -> assertTrue(response.body().contains("refresh_token"), "Keycloak rotates the refresh token"));
+                () -> assertNotNull(rotatedAccessToken, "the refresh response carries a fresh access_token"),
+                () -> assertNotNull(rotatedRefreshToken, "the refresh response carries a refresh token"),
+                () -> assertNotEquals(initialRefreshToken, rotatedRefreshToken,
+                        "Keycloak must rotate the refresh token rather than echo the presented one"));
     }
 
     private static HttpResponse<String> send(Map<String, String> form, Map<String, String> headers) throws Exception {
@@ -101,6 +110,22 @@ class RefreshSpecIT extends BaseIntegrationTest {
         form.forEach((key, value) -> joiner.add(URLEncoder.encode(key, StandardCharsets.UTF_8)
                 + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)));
         return joiner.toString();
+    }
+
+    /**
+     * @param json  the token-endpoint response body
+     * @param field the top-level string field to read
+     * @return the field's value, or {@code null} when the response does not carry the field
+     */
+    private static String extractStringField(String json, String field) {
+        int key = json.indexOf("\"" + field + "\"");
+        if (key < 0) {
+            return null;
+        }
+        int colon = json.indexOf(':', key);
+        int firstQuote = json.indexOf('"', colon + 1);
+        int secondQuote = json.indexOf('"', firstQuote + 1);
+        return json.substring(firstQuote + 1, secondQuote);
     }
 
     private static SSLContext trustAllContext() throws Exception {
