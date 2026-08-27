@@ -148,6 +148,9 @@
         "default:finalize-step-print-phase-breakdown": {
           "lane": "minimal"
         },
+        "default:emit-landing": {
+          "lane": "off"
+        },
         "default:archive-plan": {
           "lane": "minimal"
         }
@@ -160,7 +163,9 @@
     }
   },
   "orchestrator": {
-    "auto_emit": false
+    "auto_emit": false,
+    "effort": {},
+    "parallelization_scope": 1
   },
   "build": {
     "queue": {
@@ -309,7 +314,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.1293",
-    "config_seed_fingerprint": "714f8058"
+    "provisioned_version": "0.1.1556",
+    "config_seed_fingerprint": "58fc3cfc"
   }
 }
