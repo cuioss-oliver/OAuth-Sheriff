@@ -39,16 +39,25 @@
       "generation": {}
     },
     "token-sheriff-client": {
-      "description": "Framework-agnostic OIDC/OAuth client engine \u2014 the outbound counterpart to token-sheriff-validation. Intended to add client-side flows (token retrieval, userinfo, revocation, introspection, end-session, PAR) on the commons transport base. Currently a wired, building skeleton with no functional flows yet (Plan 05).",
-      "generation": {}
+      "description": "Framework-agnostic OIDC/OAuth client engine \u2014 the outbound counterpart to token-sheriff-validation. Implements provider discovery, client authentication (client_secret_basic/post, private_key_jwt, mTLS), the authorization-code flow with PKCE and PAR, client credentials, refresh with rotation and reuse detection, step-up authentication, DPoP proof generation, userinfo, introspection, revocation and RP-initiated end-session. Adds token lifecycle management (store, scheduler, id-token validation bridge) on the commons transport base.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "b00bef1b09e0b3552778ae3007f1bf62d95d462bed410255d4aabfa634afb003"
+      }
     },
     "token-sheriff-client-quarkus": {
-      "description": "Runtime module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Builds on the token-sheriff-validation-quarkus extension and the framework-agnostic token-sheriff-client engine. Wired, empty skeleton (Plan 05) with no functional content yet.",
-      "generation": {}
+      "description": "Runtime module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Exposes the framework-agnostic token-sheriff-client engine as ApplicationScoped CDI beans through TokenSheriffClientProducer, maps MicroProfile configuration onto ClientConfiguration via ClientRuntimeConfig and ClientConfigMapper, and maps TransportException to a JAX-RS response. Builds on the token-sheriff-validation-quarkus extension for the id-token validation bridge.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "2aadc4dde355cdb65b3f86e1abbc6fcd41982c2784a5d700027d51ada5e082d9"
+      }
     },
     "token-sheriff-client-quarkus-deployment": {
-      "description": "Deployment (build-time) module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Registers the token-sheriff-client feature during augmentation. Wired, empty skeleton (Plan 05).",
-      "generation": {}
+      "description": "Deployment (build-time) module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Its TokenSheriffClientProcessor build steps register the token-sheriff-client feature during augmentation and contribute TokenSheriffClientProducer to the CDI bean archive, since the extension runtime jar is not part of the application's bean-discovery archive by default.",
+      "generation": {
+        "by": "architecture",
+        "tree_sha": "57016b47b61a8e0fcb8441ddec0ef330310acb184693c3b292d7d899e8c928f1"
+      }
     },
     "token-sheriff-parent": {
       "description": "Root reactor and parent POM for the Token-Sheriff project. Aggregates all modules (validation core, client, Quarkus extensions, benchmarking, docs and E2E) and centralizes shared build configuration, inheriting from cui-java-parent.",

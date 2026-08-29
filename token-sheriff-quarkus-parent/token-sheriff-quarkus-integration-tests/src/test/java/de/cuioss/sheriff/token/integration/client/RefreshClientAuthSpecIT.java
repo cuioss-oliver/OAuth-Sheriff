@@ -30,17 +30,14 @@ import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.integration.BaseIntegrationTest;
 import de.cuioss.sheriff.token.integration.TestRealm;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
-import java.security.KeyFactory;
-import java.security.PrivateKey;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.util.Base64;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.interfaces.RSAPublicKey;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,10 +60,15 @@ import static org.junit.jupiter.api.Assertions.*;
  * {@link ClientAuthenticationSelector} skips {@code tls_client_auth} for exactly that reason. Driving
  * it would need certificate infrastructure this fixture does not have.
  *
+ * <h2>Ephemeral {@code private_key_jwt} key material</h2>
+ * The assertion signing key is generated per test run and its public half is pushed onto the realm's
+ * {@code private-key-jwt-client} through {@link KeycloakAdminSupport}. No private key is committed:
+ * the realm import ships {@code use.jwks.string=true} with no {@code jwks.string}, so a failed
+ * registration cannot be masked by a stale inline key — the {@code private_key_jwt} tests would fail
+ * with {@code invalid_client} instead of silently passing against the wrong key.
+ *
  * <h2>The {@code private_key_jwt} audience trap</h2>
- * The realm's {@code private-key-jwt-client} registers its public key inline
- * ({@code use.jwks.string}), so the fixture needs no runtime registration step. Its assertion
- * audience, however, must be {@link RefreshEngineSupport#INTERNAL_TOKEN_ENDPOINT} — the endpoint URL
+ * The assertion audience must be {@link RefreshEngineSupport#INTERNAL_TOKEN_ENDPOINT} — the endpoint URL
  * the realm derives from its own {@code frontendUrl} — even though the request is sent to the
  * externally reachable {@link RefreshEngineSupport#TOKEN_ENDPOINT}. Audiencing the assertion at the
  * URL actually connected to is rejected with {@code invalid_client / Invalid token audience}.
@@ -79,13 +81,38 @@ class RefreshClientAuthSpecIT extends BaseIntegrationTest {
 
     private static final String PRIVATE_KEY_JWT_CLIENT_ID = "private-key-jwt-client";
 
-    /** {@code kid} of the public key registered on {@code private-key-jwt-client} in the realm import. */
+    /** {@code kid} this fixture registers the generated public key under. */
     private static final String PRIVATE_KEY_JWT_KEY_ID = "private-key-jwt-test-key";
 
     private static final String PRIVATE_KEY_JWT_ALGORITHM = "RS256";
 
-    /** Classpath location of the private half of the realm-registered signing key. */
-    private static final String PRIVATE_KEY_RESOURCE = "/keys/private-key-jwt-client.pem";
+    /** Realm the {@code private_key_jwt} client lives in. */
+    private static final String REALM = "integration";
+
+    /** RSA key size for the generated assertion signing key. */
+    private static final int PRIVATE_KEY_JWT_KEY_SIZE = 2048;
+
+    /** Assertion signing key, generated per run and registered on the realm client by {@link #registerAssertionSigningKey()}. */
+    private static KeyPair assertionSigningKey;
+
+    /**
+     * Generates the {@code private_key_jwt} signing key and registers its public half on the realm's
+     * {@code private-key-jwt-client}. Any failure — key generation, admin authentication, a missing
+     * client, or a rejected update — propagates and fails the whole class; it is never downgraded to a
+     * skip, because a skipped {@code private_key_jwt} spec is indistinguishable from a passing one in
+     * CI.
+     *
+     * @throws NoSuchAlgorithmException never in practice — RSA is a mandatory JDK algorithm
+     */
+    @BeforeAll
+    static void registerAssertionSigningKey() throws NoSuchAlgorithmException {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(PRIVATE_KEY_JWT_KEY_SIZE);
+        assertionSigningKey = generator.generateKeyPair();
+
+        KeycloakAdminSupport.registerSigningJwk(REALM, PRIVATE_KEY_JWT_CLIENT_ID, PRIVATE_KEY_JWT_KEY_ID,
+                (RSAPublicKey) assertionSigningKey.getPublic());
+    }
 
     @Test
     @DisplayName("Should refresh with client_secret_post client authentication")
@@ -194,34 +221,12 @@ class RefreshClientAuthSpecIT extends BaseIntegrationTest {
     }
 
     /**
-     * @return {@code private_key_jwt} authentication over the realm-registered signing key, audienced at
-     *         the realm's own (internal) token endpoint — see the class-level audience note
+     * @return {@code private_key_jwt} authentication over the run-generated signing key registered by
+     *         {@link #registerAssertionSigningKey()}, audienced at the realm's own (internal) token
+     *         endpoint — see the class-level audience note
      */
     private static PrivateKeyJwtAuth privateKeyJwtAuth() {
         return new PrivateKeyJwtAuth(PRIVATE_KEY_JWT_CLIENT_ID, RefreshEngineSupport.INTERNAL_TOKEN_ENDPOINT,
-                signingKey(), PRIVATE_KEY_JWT_KEY_ID, PRIVATE_KEY_JWT_ALGORITHM);
-    }
-
-    /**
-     * @return the private half of the key whose public JWK the realm import registers on
-     *         {@code private-key-jwt-client}
-     * @throws IllegalStateException if the fixture key is missing or unreadable — a setup failure, never
-     *         a reason to skip the assertion
-     */
-    private static PrivateKey signingKey() {
-        try (InputStream pem = RefreshClientAuthSpecIT.class.getResourceAsStream(PRIVATE_KEY_RESOURCE)) {
-            if (pem == null) {
-                throw new IllegalStateException("Missing test fixture " + PRIVATE_KEY_RESOURCE);
-            }
-            String contents = new String(pem.readAllBytes(), StandardCharsets.UTF_8);
-            String base64 = contents
-                    .replace("-----BEGIN PRIVATE KEY-----", "")
-                    .replace("-----END PRIVATE KEY-----", "")
-                    .replaceAll("\\s", "");
-            return KeyFactory.getInstance("RSA")
-                    .generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(base64)));
-        } catch (IOException | GeneralSecurityException e) {
-            throw new IllegalStateException("Failed to load " + PRIVATE_KEY_RESOURCE, e);
-        }
+                assertionSigningKey.getPrivate(), PRIVATE_KEY_JWT_KEY_ID, PRIVATE_KEY_JWT_ALGORITHM);
     }
 }

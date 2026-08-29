@@ -1,5 +1,9 @@
 {
   "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "2aadc4dde355cdb65b3f86e1abbc6fcd41982c2784a5d700027d51ada5e082d9"
+  },
   "insights": [],
   "internal_dependencies": [
     "token-sheriff-client",
@@ -8,14 +12,17 @@
   "key_dependencies": [],
   "key_dependencies_reasoning": "Runtime extension building on the client engine and the validation Quarkus extension",
   "key_packages": {
-    "de.cuioss.sheriff.token.client.quarkus": {
-      "description": "Quarkus runtime wiring (skeleton) exposing the client engine as CDI beans/config."
+    "token-sheriff-quarkus-parent/token-sheriff-client-quarkus/src/main/java/de/cuioss/sheriff/token/client/quarkus": {
+      "description": "Quarkus runtime wiring: TokenSheriffClientProducer exposes the client engine as ApplicationScoped CDI beans, and ClientExceptionMapper maps TransportException onto JAX-RS responses."
+    },
+    "token-sheriff-quarkus-parent/token-sheriff-client-quarkus/src/main/java/de/cuioss/sheriff/token/client/quarkus/config": {
+      "description": "Configuration binding: ClientRuntimeConfig reads the token-sheriff.client.* MicroProfile properties lazily and ClientConfigMapper assembles them into the engine's ClientConfiguration."
     }
   },
   "purpose": "extension",
   "purpose_reasoning": "Quarkus extension runtime jar for the client engine",
-  "responsibility": "Runtime module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Builds on the token-sheriff-validation-quarkus extension and the framework-agnostic token-sheriff-client engine. Wired, empty skeleton (Plan 05) with no functional content yet.",
-  "responsibility_reasoning": "pom.xml description; single de.cuioss.sheriff.token.client.quarkus package, status skeleton",
+  "responsibility": "Runtime module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Exposes the framework-agnostic token-sheriff-client engine as ApplicationScoped CDI beans through TokenSheriffClientProducer, maps MicroProfile configuration onto ClientConfiguration via ClientRuntimeConfig and ClientConfigMapper, and maps TransportException to a JAX-RS response. Builds on the token-sheriff-validation-quarkus extension for the id-token validation bridge.",
+  "responsibility_reasoning": "Read the module source tree: TokenSheriffClientProducer (@ApplicationScoped, lazy @Produces methods for DiscoveryResolver, TokenEndpointClient, AuthorizationCodeFlow, RefreshFlow, ParClient, TokenLifecycleManager and friends), ClientRuntimeConfig, ClientConfigMapper and ClientExceptionMapper; the prior description was stale",
   "skills_by_profile": {
     "implementation": {
       "defaults": [

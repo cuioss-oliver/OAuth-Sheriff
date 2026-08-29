@@ -2,6 +2,10 @@
   "best_practices": [
     "Javadoc {@link} references deliberately target Lombok-backed private fields (e.g. ClientConfiguration#allowInsecureHttp, ClientAuthMethod#strength) instead of generated accessors \u2014 Lombok getters are invisible to javadoc without delombok; the field-link form validates clean under -Xdoclint:all. Decline review-bot suggestions to switch to accessor links"
   ],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "b00bef1b09e0b3552778ae3007f1bf62d95d462bed410255d4aabfa634afb003"
+  },
   "insights": [
     "package-info.java carries a Javadoc {@code doc/...adoc} reference into the doc/ tree (e.g. {@code doc/oidc/decision-oidc-module.adoc}). Any doc reorganization that deletes or moves files under doc/ MUST sweep this module's source for {@code doc/...} Javadoc references and repoint them, or they become dangling links to removed files. The scope_criterion_validator's recursive grep over token-sheriff-client/ catches these before execution."
   ],
@@ -13,14 +17,23 @@
   ],
   "key_dependencies_reasoning": "Builds on the commons transport base shipped in token-sheriff-validation, with cui-java-tools utilities",
   "key_packages": {
-    "de.cuioss.sheriff.token.client": {
-      "description": "Client engine package (skeleton) for outbound OIDC/OAuth flows built on the validation transport base."
+    "token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/auth": {
+      "description": "Client-authentication strategies for the token endpoint: client_secret_basic, client_secret_post, private_key_jwt and mTLS, selected by ClientAuthenticationSelector."
+    },
+    "token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/dpop": {
+      "description": "DPoP (RFC 9449) sender-constrained token support: proof-JWT generation and the constraint-binding model shared with the validation side."
+    },
+    "token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/flow": {
+      "description": "OAuth/OIDC flow implementations: authorization-code with PKCE, pushed authorization requests, client credentials, refresh, step-up, and the shared token-endpoint client."
+    },
+    "token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/lifecycle": {
+      "description": "Token lifecycle management: the TokenStore abstraction with an in-memory implementation, proactive refresh scheduling, and token revocation."
     }
   },
   "purpose": "library",
   "purpose_reasoning": "jar packaging, pure-Java framework-agnostic client engine",
-  "responsibility": "Framework-agnostic OIDC/OAuth client engine \u2014 the outbound counterpart to token-sheriff-validation. Intended to add client-side flows (token retrieval, userinfo, revocation, introspection, end-session, PAR) on the commons transport base. Currently a wired, building skeleton with no functional flows yet (Plan 05).",
-  "responsibility_reasoning": "README.adoc + pom.xml description; single de.cuioss.sheriff.token.client package, status=empty skeleton",
+  "responsibility": "Framework-agnostic OIDC/OAuth client engine \u2014 the outbound counterpart to token-sheriff-validation. Implements provider discovery, client authentication (client_secret_basic/post, private_key_jwt, mTLS), the authorization-code flow with PKCE and PAR, client credentials, refresh with rotation and reuse detection, step-up authentication, DPoP proof generation, userinfo, introspection, revocation and RP-initiated end-session. Adds token lifecycle management (store, scheduler, id-token validation bridge) on the commons transport base.",
+  "responsibility_reasoning": "Read the module source tree: packages auth, config, discovery, dpop, flow, internal, lifecycle, logout, token hold 57 production classes including AuthorizationCodeFlow, RefreshFlow, ParClient, TokenEndpointClient, DpopProofGenerator and TokenLifecycleManager; the prior description was stale",
   "skills_by_profile": {
     "implementation": {
       "defaults": [
