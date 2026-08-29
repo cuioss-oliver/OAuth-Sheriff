@@ -5,9 +5,13 @@ Token-Sheriff is a high-performance OAuth 2.0 and OpenID Connect token validatio
 ## Dev Environment Tips
 
 ### Build System
-- **Build tool**: Maven 3.9.6 (via wrapper: `./mvnw`)
-- **Java version**: Java 21 (LTS)
-- **Primary framework**: Quarkus 3.34.0
+- **Build tool**: Maven, via the wrapper (`./mvnw`) — never a locally installed `mvn`
+- **Java version**: as declared by `maven.compiler.release` in the root `pom.xml`
+- **Primary framework**: Quarkus, pinned by `version.quarkus` in the root `pom.xml`
+
+Deliberately no version numbers here: this file is not a source of truth for them and
+silently goes stale. Read the root `pom.xml` and `.mvn/wrapper/maven-wrapper.properties`
+when a concrete version matters.
 
 ### Project Structure
 Multi-module Maven project:
@@ -35,7 +39,7 @@ Multi-module Maven project:
 - **Indentation**: 4 spaces (configured in `.editorconfig`)
 - **Line endings**: Unix-style (LF)
 - **Encoding**: UTF-8
-- **Java features**: Use modern Java 21 features (records, sealed classes, pattern matching, text blocks)
+- **Java features**: Use the modern Java features the configured release level allows (records, sealed classes, pattern matching, text blocks)
 - **Lombok**: Use `@Builder`, `@Value`, `@NonNull`, `@ToString`, `@EqualsAndHashCode` appropriately
 
 ### Logging Standards
@@ -143,7 +147,7 @@ Test code violations:
 
 ## Pre-1.0 Project Rules
 
-This project is PRE-1.0 (current version: 1.0.0-SNAPSHOT). Therefore:
+This project is PRE-1.0 (see the root `pom.xml` for the current version). Therefore:
 - **Never deprecate code** - Remove it directly if not needed
 - **Never add transitional comments** like "TODO: Remove in v2.0"
 - **Never enforce backward compatibility** - Make breaking changes freely
