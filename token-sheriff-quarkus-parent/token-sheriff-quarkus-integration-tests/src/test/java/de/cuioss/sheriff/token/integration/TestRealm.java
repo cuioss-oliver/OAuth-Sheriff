@@ -80,6 +80,10 @@ public class TestRealm {
     private static final String DPOP_CLIENT_ID = "dpop-client";
     private static final String DPOP_CLIENT_SECRET = "dpop-secret";
 
+    // Fast-refresh client constants (same realm, client with access.token.lifespan=35)
+    private static final String REFRESH_FAST_CLIENT_ID = "refresh-fast-client";
+    private static final String REFRESH_FAST_CLIENT_SECRET = "refresh-fast-secret";
+
     // JWE client constants (same realm, client with id_token_encrypted_response_alg/enc)
     private static final String JWE_CLIENT_ID = "jwe-client";
     private static final String JWE_CLIENT_SECRET = "jwe-secret";
@@ -228,6 +232,19 @@ public class TestRealm {
     }
 
     /**
+     * Refresh testing — uses {@code refresh-fast-client} in the integration realm
+     * with {@code access.token.lifespan=35}, so a freshly issued access token becomes
+     * proactively refresh-eligible within seconds of issue.
+     */
+    public static TestRealm createFastRefreshRealm() {
+        return new TestRealm(
+                INTEGRATION_REALM_ID, REFRESH_FAST_CLIENT_ID, REFRESH_FAST_CLIENT_SECRET,
+                INTEGRATION_USERNAME, INTEGRATION_PASSWORD,
+                KEYCLOAK_BASE_URL, TOKEN_ENDPOINT_TEMPLATE.formatted(INTEGRATION_REALM_ID),
+                "Keycloak", KEYCLOAK_CAPABILITIES);
+    }
+
+    /**
      * JWE testing — uses {@code jwe-client} in the integration realm
      * with encrypted ID token response configured.
      */
@@ -353,7 +370,8 @@ public class TestRealm {
         var response = new TokenResponse(
                 (String) tokenData.get("access_token"),
                 (String) tokenData.get("id_token"),
-                (String) tokenData.get("refresh_token"));
+                (String) tokenData.get("refresh_token"),
+                readExpiresInSeconds(tokenData));
 
         validateToken(response.accessToken(), "Access token from " + this);
         // ID token is not returned by client_credentials grant (Zitadel)
@@ -420,7 +438,7 @@ public class TestRealm {
         validateToken(idToken, "ID token");
         validateToken(refreshToken, "Refresh token");
 
-        return new TokenResponse(accessToken, idToken, refreshToken);
+        return new TokenResponse(accessToken, idToken, refreshToken, readExpiresInSeconds(tokenData));
     }
 
     @Override
@@ -434,8 +452,26 @@ public class TestRealm {
     }
 
     /**
-     * Response object containing the different token types.
+     * Reads the {@code expires_in} field from a token endpoint response.
+     *
+     * @param tokenData the parsed token endpoint response body
+     * @return the access token lifetime in seconds, or {@code null} when the provider
+     *         omitted {@code expires_in}
      */
-    public record TokenResponse(String accessToken, String idToken, String refreshToken) {
+    private static Integer readExpiresInSeconds(Map<String, Object> tokenData) {
+        return tokenData.get("expires_in") instanceof Number lifetime ? lifetime.intValue() : null;
+    }
+
+    /**
+     * Response object containing the different token types.
+     *
+     * @param accessToken     the access token
+     * @param idToken         the ID token, {@code null} for grants that issue none
+     * @param refreshToken    the refresh token, {@code null} for grants that issue none
+     * @param expiresInSeconds the access token lifetime in seconds as reported by the
+     *                        provider, {@code null} when the provider omitted it
+     */
+    public record TokenResponse(String accessToken, String idToken, String refreshToken,
+    Integer expiresInSeconds) {
     }
 }

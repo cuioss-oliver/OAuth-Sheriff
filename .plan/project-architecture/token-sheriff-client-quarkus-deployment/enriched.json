@@ -1,5 +1,9 @@
 {
   "best_practices": [],
+  "generation": {
+    "by": "architecture",
+    "tree_sha": "57016b47b61a8e0fcb8441ddec0ef330310acb184693c3b292d7d899e8c928f1"
+  },
   "insights": [],
   "internal_dependencies": [
     "token-sheriff-client-quarkus"
@@ -7,14 +11,14 @@
   "key_dependencies": [],
   "key_dependencies_reasoning": "Build-time deployment counterpart of the client runtime extension",
   "key_packages": {
-    "de.cuioss.sheriff.token.client.quarkus.deployment": {
-      "description": "Build-time processor registering the token-sheriff-client Quarkus feature (skeleton)."
+    "token-sheriff-quarkus-parent/token-sheriff-client-quarkus-deployment/src/main/java/de/cuioss/sheriff/token/client/quarkus/deployment": {
+      "description": "Build-time processor: TokenSheriffClientProcessor registers the token-sheriff-client feature and contributes TokenSheriffClientProducer as an additional CDI bean during augmentation."
     }
   },
   "purpose": "deployment",
   "purpose_reasoning": "Quarkus build-time deployment/processor module registering the client feature",
-  "responsibility": "Deployment (build-time) module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Registers the token-sheriff-client feature during augmentation. Wired, empty skeleton (Plan 05).",
-  "responsibility_reasoning": "pom.xml description; single de.cuioss.sheriff.token.client.quarkus.deployment package with the feature processor",
+  "responsibility": "Deployment (build-time) module of the Quarkus extension for the Token-Sheriff OIDC/OAuth client engine. Its TokenSheriffClientProcessor build steps register the token-sheriff-client feature during augmentation and contribute TokenSheriffClientProducer to the CDI bean archive, since the extension runtime jar is not part of the application's bean-discovery archive by default.",
+  "responsibility_reasoning": "Read TokenSheriffClientProcessor: a @BuildStep feature() returning FeatureBuildItem plus a @BuildStep additionalBeans() returning AdditionalBeanBuildItem for TokenSheriffClientProducer; the prior description was stale",
   "skills_by_profile": {
     "implementation": {
       "defaults": [
@@ -98,5 +102,6 @@
     }
   },
   "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals; Repopulate skills_by_profile after phase-4 Q-Gate finding f9f1e9: documentation module lacked the implementation profile key declared by pm-documents",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

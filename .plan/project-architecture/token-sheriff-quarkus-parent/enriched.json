@@ -101,5 +101,6 @@
   "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals; Repopulate skills_by_profile after phase-4 Q-Gate finding f9f1e9: documentation module lacked the implementation profile key declared by pm-documents",
   "tips": [
     "Review bots (e.g. gemini-code-assist) may file factually wrong existence claims about Quarkus artifacts relocated in Quarkus 3.37+ (quarkus-junit and QuarkusExtensionTest DO exist at 3.37.2 post-relocation). During PR-comment triage, verify any 'artifact/class does not exist' bot claim against the actual dependency tree (mvn dependency:tree / resolved classpath) before accepting it \u2014 11 such findings were pure triage noise on one run."
-  ]
+  ],
+  "type": "module"
 }

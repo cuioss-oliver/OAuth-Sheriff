@@ -111,5 +111,6 @@
     }
   },
   "skills_by_profile_reasoning": "wizard re-run: batch-populate skills_by_profile from extension signals; Repopulate skills_by_profile after phase-4 Q-Gate finding f9f1e9: documentation module lacked the implementation profile key declared by pm-documents",
-  "tips": []
+  "tips": [],
+  "type": "module"
 }

@@ -104,6 +104,50 @@
         "backchannel.logout.revoke.offline.tokens": "false",
         "dpop.bound.access.tokens": "true"
       }
+    },
+    {
+      "clientId": "refresh-fast-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "refresh-fast-secret",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "access.token.lifespan": "35"
+      }
+    },
+    {
+      "clientId": "private-key-jwt-client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-jwt",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "read"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+      "attributes": {
+        "post.logout.redirect.uris": "*",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "backchannel.logout.revoke.offline.tokens": "false",
+        "token.endpoint.auth.signing.alg": "RS256",
+        "use.jwks.string": "true"
+      }
     }
   ],
   "users": [

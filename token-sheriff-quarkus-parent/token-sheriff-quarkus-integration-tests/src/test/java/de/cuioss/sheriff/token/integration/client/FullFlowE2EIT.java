@@ -15,10 +15,13 @@
  */
 package de.cuioss.sheriff.token.integration.client;
 
-import de.cuioss.sheriff.token.client.auth.ClientSecretBasicAuth;
+import de.cuioss.sheriff.token.client.config.ClientConfiguration;
+import de.cuioss.sheriff.token.client.flow.RefreshFlow;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.sheriff.token.client.logout.PostLogoutRedirectValidator;
+import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.client.token.SubBindingValidator;
+import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.UserInfoResponse;
 import de.cuioss.sheriff.token.integration.BaseIntegrationTest;
 import de.cuioss.sheriff.token.integration.TestRealm;
@@ -30,7 +33,6 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -38,7 +40,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
-import java.util.*;
+import java.util.Base64;
+import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -54,9 +58,9 @@ import static org.junit.jupiter.api.Assertions.*;
  *     <li><strong>userinfo</strong> — the userinfo document's {@code sub} is bound to the ID token
  *         {@code sub} through the production {@link SubBindingValidator}, and a forged foreign
  *         {@code sub} is rejected (OIDC Core §5.3.2);</li>
- *     <li><strong>refresh</strong> — the refresh token is redeemed with the production
- *         {@link ClientSecretBasicAuth} strategy, and Keycloak issues a fresh access token and rotates
- *         the refresh token (RFC 6749 §6, OAuth 2.0 Security BCP);</li>
+ *     <li><strong>refresh</strong> — the refresh token is redeemed through the production
+ *         {@link de.cuioss.sheriff.token.client.flow.RefreshFlow}, and Keycloak issues a fresh access
+ *         token and rotates the refresh token (RFC 6749 §6, OAuth 2.0 Security BCP);</li>
  *     <li><strong>logout</strong> — the production {@link EndSessionFlow} builds an RP-initiated logout
  *         with the {@code id_token_hint}, an exact-matched {@code post_logout_redirect_uri}, and a
  *         session-bound {@code state}, which Keycloak accepts (RFC RP-Initiated Logout,
@@ -71,7 +75,6 @@ class FullFlowE2EIT extends BaseIntegrationTest {
     private static final CuiLogger LOGGER = new CuiLogger(FullFlowE2EIT.class);
 
     private static final String BASE = "https://localhost:1443/realms/integration/protocol/openid-connect";
-    private static final String TOKEN_ENDPOINT = BASE + "/token";
     private static final String USERINFO_ENDPOINT = BASE + "/userinfo";
     private static final String END_SESSION_ENDPOINT = BASE + "/logout";
     private static final String POST_LOGOUT_REDIRECT_URI = "https://localhost/callback";
@@ -106,24 +109,21 @@ class FullFlowE2EIT extends BaseIntegrationTest {
                         () -> subBindingValidator.validate(idTokenSub, foreignUserInfo),
                         "a forged foreign userinfo sub is rejected"));
 
-        // 3. refresh -> fresh access token + rotated refresh token via the production auth strategy
-        ClientSecretBasicAuth auth = new ClientSecretBasicAuth(CLIENT_ID, CLIENT_SECRET);
-        Map<String, String> refreshForm = new HashMap<>(Map.of(
-                "grant_type", "refresh_token",
-                "refresh_token", tokens.refreshToken()));
-        Map<String, String> refreshHeaders = new HashMap<>();
-        auth.decorate(refreshForm, refreshHeaders);
+        // 3. refresh -> fresh access token + rotated refresh token through the production RefreshFlow
+        ClientConfiguration configuration = RefreshEngineSupport.clientConfiguration(CLIENT_ID, CLIENT_SECRET);
+        TokenValidationBridge accessBridge =
+                RefreshEngineSupport.accessTokenBridge(RefreshEngineSupport.tokenValidator());
+        RefreshFlow refreshFlow = RefreshEngineSupport.refreshFlow(configuration, accessBridge);
 
-        HttpResponse<String> refreshResponse = post(TOKEN_ENDPOINT, refreshForm, refreshHeaders);
-        LOGGER.debug("refresh_token response status=%s", refreshResponse.statusCode());
-        String rotatedAccessToken = extractStringField(refreshResponse.body(), "access_token");
-        String rotatedRefreshToken = extractStringField(refreshResponse.body(), "refresh_token");
-        assertAll("refresh_token grant",
-                () -> assertEquals(200, refreshResponse.statusCode(), "Keycloak must accept the refresh_token grant"),
-                () -> assertNotNull(rotatedAccessToken, "the refresh response carries a fresh access_token"),
-                () -> assertNotNull(rotatedRefreshToken, "Keycloak rotates the refresh token"),
-                () -> assertNotEquals(tokens.refreshToken(), rotatedRefreshToken,
-                        "the rotated refresh token differs from the original"));
+        RotationResult rotation =
+                refreshFlow.refresh(RefreshEngineSupport.providerMetadata(), tokens.refreshToken());
+        LOGGER.debug("refresh rotated=%s", rotation.rotated());
+        assertAll("refresh_token grant through the production RefreshFlow",
+                () -> assertTrue(rotation.rotated(), "Keycloak must rotate the refresh token on redemption"),
+                () -> assertNotEquals(tokens.refreshToken(), rotation.refreshToken(),
+                        "the rotated refresh token differs from the original"),
+                () -> assertFalse(rotation.accessToken().getRawToken().isBlank(),
+                        "the rotation carries a fresh, non-blank access token"));
 
         // 4. logout -> RP-initiated end-session through the production flow
         EndSessionFlow endSessionFlow =
@@ -149,17 +149,6 @@ class FullFlowE2EIT extends BaseIntegrationTest {
         return extractStringField(response.body(), "sub");
     }
 
-    private static HttpResponse<String> post(String endpoint, Map<String, String> form,
-            Map<String, String> headers) throws Exception {
-        HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(endpoint))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(encodeForm(form)));
-        headers.forEach(builder::header);
-        return client().send(builder.build(), HttpResponse.BodyHandlers.ofString());
-    }
-
     private static HttpResponse<String> get(String url) throws Exception {
         return HttpClient.newBuilder()
                 .sslContext(trustAllContext())
@@ -175,13 +164,6 @@ class FullFlowE2EIT extends BaseIntegrationTest {
                 .sslContext(trustAllContext())
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
-    }
-
-    private static String encodeForm(Map<String, String> form) {
-        StringJoiner joiner = new StringJoiner("&");
-        form.forEach((key, value) -> joiner.add(URLEncoder.encode(key, StandardCharsets.UTF_8)
-                + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)));
-        return joiner.toString();
     }
 
     private static String subjectOf(String jwt) {

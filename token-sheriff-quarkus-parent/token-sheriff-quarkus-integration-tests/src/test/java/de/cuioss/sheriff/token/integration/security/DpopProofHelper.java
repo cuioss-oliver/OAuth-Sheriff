@@ -33,8 +33,23 @@ public class DpopProofHelper {
     private final Map<String, Object> jwkMap;
     private final String jwkJson;
 
+    /**
+     * Creates a helper over a freshly generated RSA key pair.
+     */
     public DpopProofHelper() {
-        this.keyPair = generateRsaKeyPair();
+        this(generateRsaKeyPair());
+    }
+
+    /**
+     * Creates a helper over a caller-supplied key pair, so the same proof key can be presented across
+     * several legs of one flow — for example the acquisition and the refresh leg of a
+     * sender-constrained exchange, where {@code cnf.jkt} continuity is the property under test.
+     *
+     * @param keyPair the RSA key pair to sign proofs with; its public key is advertised in the
+     *                proof header's {@code jwk}
+     */
+    public DpopProofHelper(KeyPair keyPair) {
+        this.keyPair = keyPair;
         this.jwkMap = rsaPublicKeyToJwkMap((RSAPublicKey) keyPair.getPublic());
         this.jwkJson = mapToJson(jwkMap);
     }

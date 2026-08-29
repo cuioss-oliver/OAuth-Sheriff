@@ -22,9 +22,11 @@
  * opt-in clean: an application adds the client extension only when it needs the outbound flows.
  * The build-time counterpart lives in {@code token-sheriff-client-quarkus-deployment}.
  * <p>
- * <strong>Status:</strong> wired, empty skeleton (Plan 05). The extension registers the
- * {@code token-sheriff-client} feature and assembles against the reactor; runtime producers and
- * configuration land with the client flows (Plan 06).
+ * The extension registers the {@code token-sheriff-client} feature and supplies the runtime CDI
+ * layer: {@link de.cuioss.sheriff.token.client.quarkus.TokenSheriffClientProducer} assembles the
+ * engine from configuration, {@link de.cuioss.sheriff.token.client.quarkus.ClientExceptionMapper}
+ * maps client failures onto responses, and the {@code config} package binds the MicroProfile
+ * configuration surface.
  *
  * @author Oliver Wolff
  */
