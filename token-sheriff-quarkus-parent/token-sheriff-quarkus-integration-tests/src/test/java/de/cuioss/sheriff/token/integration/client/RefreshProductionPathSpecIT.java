@@ -55,6 +55,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * {@link RefreshEngineSupport#productionFrame}), so a red run names the engine class at fault instead
  * of collapsing into an opaque transport error.
  */
+// cui-rewrite:disable InvalidExceptionUsageRecipe
+// drive(...) catches RuntimeException deliberately: it is the elimination test's failure funnel, and
+// the whole point is that the engine's failure mode is NOT known in advance. Narrowing the catch to
+// specific types would let an unanticipated engine exception escape as an opaque error instead of an
+// AssertionError naming the production frame, which is the one thing this spec exists to report.
 @DisplayName("Production RefreshFlow against real Keycloak")
 class RefreshProductionPathSpecIT extends BaseIntegrationTest {
 
@@ -188,9 +193,7 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
     private static <T> T drive(String leg, Supplier<T> action) {
         try {
             return action.get();
-        }
-        /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
-        catch (RuntimeException e) {
+        } catch (RuntimeException e) {
             LOGGER.debug(e, "Production refresh path failed during %s", leg);
             String frame = RefreshEngineSupport.productionFrame(e)
                     .orElse("<no " + RefreshEngineSupport.PRODUCTION_PACKAGE + "* frame on the stack>");
