@@ -33,8 +33,6 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -54,16 +52,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * generation, and the validation bridge are all the production implementations.
  * <p>
  * A failure is deliberately surfaced with the production stack frame that raised it (see
- * {@link #productionFrame}), so a red run names the engine class at fault instead of collapsing into
- * an opaque transport error.
+ * {@link RefreshEngineSupport#productionFrame}), so a red run names the engine class at fault instead
+ * of collapsing into an opaque transport error.
  */
 @DisplayName("Production RefreshFlow against real Keycloak")
 class RefreshProductionPathSpecIT extends BaseIntegrationTest {
 
     private static final CuiLogger LOGGER = new CuiLogger(RefreshProductionPathSpecIT.class);
-
-    /** Package prefix identifying a frame inside the production client engine. */
-    private static final String PRODUCTION_PACKAGE = "de.cuioss.sheriff.token.client.";
 
     private static final String INTEGRATION_CLIENT_ID = "integration-client";
     private static final String INTEGRATION_CLIENT_SECRET = "integration-secret";
@@ -117,7 +112,7 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
     @Test
     @DisplayName("Should preserve the DPoP sender constraint across a production refresh")
     void shouldPreserveDpopSenderConstraintAcrossRefresh() {
-        KeyPair proofKey = generateRsaKeyPair();
+        KeyPair proofKey = RefreshEngineSupport.generateRsaKeyPair();
         DpopProofGenerator proofGenerator = RefreshEngineSupport.dpopProofGenerator(proofKey);
 
         TestRealm.TokenResponse acquired =
@@ -197,25 +192,11 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
         /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
         catch (RuntimeException e) {
             LOGGER.debug(e, "Production refresh path failed during %s", leg);
+            String frame = RefreshEngineSupport.productionFrame(e)
+                    .orElse("<no " + RefreshEngineSupport.PRODUCTION_PACKAGE + "* frame on the stack>");
             throw new AssertionError("Production refresh path failed during " + leg
-                    + "; production frame: " + productionFrame(e), e);
+                    + "; production frame: " + frame, e);
         }
-    }
-
-    /**
-     * @param failure the captured engine failure
-     * @return the first {@code de.cuioss.sheriff.token.client.*} frame on the failure's cause chain, or
-     *         an explicit marker when no production frame is present
-     */
-    private static String productionFrame(Throwable failure) {
-        for (Throwable current = failure; current != null; current = current.getCause()) {
-            for (StackTraceElement element : current.getStackTrace()) {
-                if (element.getClassName().startsWith(PRODUCTION_PACKAGE)) {
-                    return element.toString();
-                }
-            }
-        }
-        return "<no " + PRODUCTION_PACKAGE + "* frame on the stack>";
     }
 
     /**
@@ -229,15 +210,5 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
     private static String claimsOf(String jwt) {
         String[] segments = jwt.split("\\.");
         return new String(Base64.getUrlDecoder().decode(segments[1]), StandardCharsets.UTF_8);
-    }
-
-    private static KeyPair generateRsaKeyPair() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            return generator.generateKeyPair();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("RSA not available", e);
-        }
     }
 }

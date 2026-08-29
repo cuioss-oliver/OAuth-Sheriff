@@ -27,8 +27,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.util.Optional;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -48,9 +46,6 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @DisplayName("RefreshFlow error responses against real Keycloak")
 class RefreshErrorPathSpecIT extends BaseIntegrationTest {
-
-    /** Package prefix identifying a frame inside the production client engine. */
-    private static final String PRODUCTION_PACKAGE = "de.cuioss.sheriff.token.client.";
 
     private static final String FAST_CLIENT_ID = "refresh-fast-client";
     private static final String FAST_CLIENT_SECRET = "refresh-fast-secret";
@@ -87,9 +82,9 @@ class RefreshErrorPathSpecIT extends BaseIntegrationTest {
                 () -> assertTrue(failure.getMessage().contains("400"),
                         "the failure must report the authorization server's 400 status, was: "
                                 + failure.getMessage()),
-                () -> assertTrue(productionFrame(failure).isPresent(),
-                        "the refusal must be raised from a " + PRODUCTION_PACKAGE + "* frame, not from "
-                                + "transport code outside the engine"));
+                () -> assertTrue(RefreshEngineSupport.productionFrame(failure).isPresent(),
+                        "the refusal must be raised from a " + RefreshEngineSupport.PRODUCTION_PACKAGE
+                                + "* frame, not from transport code outside the engine"));
     }
 
     @Test
@@ -110,8 +105,9 @@ class RefreshErrorPathSpecIT extends BaseIntegrationTest {
                 () -> assertTrue(failure.getMessage().contains("400"),
                         "the failure must report the authorization server's 400 status, was: "
                                 + failure.getMessage()),
-                () -> assertTrue(productionFrame(failure).isPresent(),
-                        "the refusal must be raised from a " + PRODUCTION_PACKAGE + "* frame"));
+                () -> assertTrue(RefreshEngineSupport.productionFrame(failure).isPresent(),
+                        "the refusal must be raised from a " + RefreshEngineSupport.PRODUCTION_PACKAGE
+                                + "* frame"));
     }
 
     /**
@@ -147,21 +143,5 @@ class RefreshErrorPathSpecIT extends BaseIntegrationTest {
                 () -> assertFalse(replay.accessToken().getRawToken().isBlank(),
                         "the replay yields a fully validated access token — RefreshFlow alone refuses "
                                 + "nothing, because it holds no rotation-family bookkeeping"));
-    }
-
-    /**
-     * @param failure the captured engine failure
-     * @return the first {@code de.cuioss.sheriff.token.client.*} frame on the failure's cause chain, or
-     *         {@link Optional#empty()} when no production frame is present
-     */
-    private static Optional<String> productionFrame(Throwable failure) {
-        for (Throwable current = failure; current != null; current = current.getCause()) {
-            for (StackTraceElement element : current.getStackTrace()) {
-                if (element.getClassName().startsWith(PRODUCTION_PACKAGE)) {
-                    return Optional.of(element.toString());
-                }
-            }
-        }
-        return Optional.empty();
     }
 }
