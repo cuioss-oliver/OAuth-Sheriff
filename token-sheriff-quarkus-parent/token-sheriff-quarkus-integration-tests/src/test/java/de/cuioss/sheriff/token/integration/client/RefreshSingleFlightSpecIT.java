@@ -95,46 +95,51 @@ class RefreshSingleFlightSpecIT extends BaseIntegrationTest {
 
         ExecutorService callers = Executors.newFixedThreadPool(2);
         AtomicReference<Thread> secondCaller = new AtomicReference<>();
-        Future<Optional<StoredToken>> firstResult;
-        Future<Optional<StoredToken>> secondResult;
         try {
-            firstResult = callers.submit(() -> manager.refresh(sessionId, metadata, refreshFlow,
-                    revocationClient, idBridge, clientAuthentication));
-            assertTrue(firstCallerParked.await(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS),
-                    "the first caller must reach the refresh flow, having installed the single-flight future");
+            Future<Optional<StoredToken>> firstResult;
+            Future<Optional<StoredToken>> secondResult;
+            try {
+                firstResult = callers.submit(() -> manager.refresh(sessionId, metadata, refreshFlow,
+                        revocationClient, idBridge, clientAuthentication));
+                assertTrue(firstCallerParked.await(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS),
+                        "the first caller must reach the refresh flow, having installed the single-flight future");
 
-            secondResult = callers.submit(() -> {
-                secondCaller.set(Thread.currentThread());
-                return manager.refresh(sessionId, metadata, refreshFlow, revocationClient, idBridge,
-                        clientAuthentication);
-            });
-            // The second caller can only reach WAITING by joining the first caller's in-flight future:
-            // its own token exchange would be a blocking socket read (RUNNABLE), and reaching the flow
-            // at all would have bumped the exchange count asserted below.
-            await("second caller collapsed onto the in-flight rotation")
-                    .atMost(HANDOVER_BUDGET)
-                    .pollInterval(Duration.ofMillis(50))
-                    .until(() -> secondCaller.get() != null
-                            && secondCaller.get().getState() == Thread.State.WAITING);
+                secondResult = callers.submit(() -> {
+                    secondCaller.set(Thread.currentThread());
+                    return manager.refresh(sessionId, metadata, refreshFlow, revocationClient, idBridge,
+                            clientAuthentication);
+                });
+                // The second caller can only reach WAITING by joining the first caller's in-flight future:
+                // its own token exchange would be a blocking socket read (RUNNABLE), and reaching the flow
+                // at all would have bumped the exchange count asserted below.
+                await("second caller collapsed onto the in-flight rotation")
+                        .atMost(HANDOVER_BUDGET)
+                        .pollInterval(Duration.ofMillis(50))
+                        .until(() -> secondCaller.get() != null
+                                && secondCaller.get().getState() == Thread.State.WAITING);
+            } finally {
+                releaseFirstCaller.countDown();
+            }
+
+            Optional<StoredToken> firstObserved =
+                    firstResult.get(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS);
+            Optional<StoredToken> secondObserved =
+                    secondResult.get(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS);
+            StoredToken refreshed = firstObserved
+                    .orElseThrow(() -> new AssertionError("the first caller must observe the refreshed bundle"));
+
+            assertAll("single-flight collapse",
+                    () -> assertEquals(1, refreshFlow.exchanges(),
+                            "the refresh token must be redeemed exactly once across both concurrent callers"),
+                    () -> assertEquals(firstObserved, secondObserved,
+                            "the second caller must observe the first caller's rotation, not one of its own"),
+                    () -> assertNotEquals(original.refreshToken(), refreshed.refreshToken(),
+                            "the single rotation must still have advanced the session's refresh token"),
+                    () -> assertEquals(Optional.of(refreshed), manager.get(sessionId),
+                            "the store must hold exactly the bundle both callers observed"));
         } finally {
-            releaseFirstCaller.countDown();
+            callers.shutdownNow();
         }
-
-        Optional<StoredToken> firstObserved = firstResult.get(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS);
-        Optional<StoredToken> secondObserved = secondResult.get(HANDOVER_BUDGET.toSeconds(), TimeUnit.SECONDS);
-        callers.shutdownNow();
-        StoredToken refreshed = firstObserved
-                .orElseThrow(() -> new AssertionError("the first caller must observe the refreshed bundle"));
-
-        assertAll("single-flight collapse",
-                () -> assertEquals(1, refreshFlow.exchanges(),
-                        "the refresh token must be redeemed exactly once across both concurrent callers"),
-                () -> assertEquals(firstObserved, secondObserved,
-                        "the second caller must observe the first caller's rotation, not one of its own"),
-                () -> assertNotEquals(original.refreshToken(), refreshed.refreshToken(),
-                        "the single rotation must still have advanced the session's refresh token"),
-                () -> assertEquals(Optional.of(refreshed), manager.get(sessionId),
-                        "the store must hold exactly the bundle both callers observed"));
     }
 
     private static StoredToken acquireBundle() {
