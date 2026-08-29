@@ -1,6 +1,6 @@
 # Claude Code Configuration
 
-All AI development guidelines for this project live in **`agents.md`** (hardlinked to `AGENTS.md`).
+All AI development guidelines for this project live in **`AGENTS.md`**.
 Refer to that file for dev-environment tips, build commands, testing instructions, code style,
 and framework-specific standards when working on Token-Sheriff.
 
