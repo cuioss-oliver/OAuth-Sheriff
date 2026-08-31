@@ -194,6 +194,35 @@ public class ClientConfiguration {
     SSLContext sslContext;
 
     /**
+     * Whether a refresh whose granted scope is <em>broader</em> than the requested scope is refused.
+     * Defaults to {@code false}.
+     * <p>
+     * <strong>Default (lenient, {@code false}):</strong> a broadened grant is accepted, logged at
+     * {@code WARN}, and surfaced on {@code RotationResult} as {@code scopeDelta=BROADENED} with the
+     * raw {@code grantedScope}, so the calling application can act on the delta. This is the correct
+     * default: RFC 6749 §3.3 permits an authorization server to grant a scope other than the one
+     * requested provided it discloses the result, several major authorization servers canonicalise or
+     * expand scope sets as a matter of course, and the resource server remains the enforcement point
+     * for a claim that was never actually granted. Refusing by default would convert a benign server
+     * quirk into a total authentication outage with no attacker in the loop.
+     * <p>
+     * <strong>Strict ({@code true}):</strong> a broadened grant raises
+     * {@code ClientProtocolException} and no result is produced. Enable this <em>only</em> against an
+     * authorization server known not to canonicalise or expand scope sets — the outage risk above is
+     * real and falls entirely on the deployment that opts in. Its only profile precedent is FAPI 1.0
+     * Part 1 §5.2.3(10), an authorization-code-response rule that FAPI 2.0 dropped.
+     * <p>
+     * The flag changes nothing else: a <em>narrowed</em> grant is accepted and {@code WARN}-logged in
+     * both postures, and an equal or absent granted scope is accepted silently in both. Reconciliation
+     * is skipped entirely when {@link #getScopes()} is empty, since no scope was requested and there is
+     * no baseline to compare against.
+     *
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc6749#section-3.3">RFC 6749 §3.3 - Access Token Scope</a>
+     */
+    @Builder.Default
+    boolean strictScopeReconciliation = false;
+
+    /**
      * All-args constructor invoked by the Lombok-generated builder. It validates the configuration at
      * construction so a malformed client can never be built and later fail obscurely on the wire:
      * {@code issuer} and {@code clientId} must be non-blank, {@code issuer} must be a well-formed
@@ -212,7 +241,8 @@ public class ClientConfiguration {
     ClientConfiguration(@NonNull String issuer, @NonNull String clientId, @Nullable String clientSecret,
             @NonNull ClientAuthMethod authMethod, List<String> scopes, @Nullable String redirectUri,
             boolean allowInsecureHttp, int connectTimeoutSeconds, int readTimeoutSeconds,
-            int discoveryDocumentMaxSize, @Nullable SSLContext sslContext) {
+            int discoveryDocumentMaxSize, @Nullable SSLContext sslContext,
+            boolean strictScopeReconciliation) {
         this.issuer = requireNonBlank(issuer, "issuer");
         validateIssuerUrl(this.issuer);
         this.clientId = requireNonBlank(clientId, "clientId");
@@ -226,6 +256,8 @@ public class ClientConfiguration {
         this.discoveryDocumentMaxSize = requirePositive(discoveryDocumentMaxSize, "discoveryDocumentMaxSize");
         // No validation: null means "use the cui-http / JVM default truststore", the unconfigured default.
         this.sslContext = sslContext;
+        // No validation: a boolean has no invalid value.
+        this.strictScopeReconciliation = strictScopeReconciliation;
     }
 
     /**

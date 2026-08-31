@@ -136,7 +136,8 @@ class TokenResponseTest {
             String rawAccess = holder.getRawToken();
             String refresh = Generators.letterStrings(20, 40).next();
             String idToken = Generators.letterStrings(20, 40).next();
-            var result = new RotationResult(access, refresh, idToken, 300L, true);
+            var result = new RotationResult(access, refresh, idToken, 300L, true,
+                    "openid profile", RotationResult.ScopeDelta.EQUAL);
 
             String rendered = result.toString();
 
@@ -157,7 +158,8 @@ class TokenResponseTest {
         void shouldRenderAbsentRotationIdTokenAsNull() {
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             var result = new RotationResult(holder.asAccessTokenContent(),
-                    Generators.letterStrings(20, 40).next(), null, 0L, false);
+                    Generators.letterStrings(20, 40).next(), null, 0L, false,
+                    null, RotationResult.ScopeDelta.UNDECLARED);
 
             String rendered = result.toString();
 

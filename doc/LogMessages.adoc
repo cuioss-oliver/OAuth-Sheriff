@@ -205,7 +205,7 @@ This section documents log messages specific to the client engine (token-sheriff
 |TokenSheriffClient-002 |LOGOUT |Cleared held tokens for session '%s' as part of RP-initiated logout |Logged when held tokens for a session are cleared from the local store during RP-initiated logout (client-side store clear only; RFC 7009 revocation is performed separately)
 |===
 
-=== Client WARN Level (100-109)
+=== Client WARN Level (100-111)
 
 [cols="1,1,2,2", options="header"]
 |===
@@ -220,6 +220,8 @@ This section documents log messages specific to the client engine (token-sheriff
 |TokenSheriffClient-107 |LOGOUT |Post-logout redirect URI '%s' does not exactly match any registered URI; refusing RP-initiated logout (open-redirect defence) |Logged when a post-logout redirect URI does not exactly match a registered URI
 |TokenSheriffClient-108 |LIFECYCLE |Refresh token reuse detected for session '%s'; revoking the family at the authorization server (RFC 7009) and clearing the store |Logged when refresh-token reuse is detected on a stored session and the family is revoked
 |TokenSheriffClient-109 |TOKEN |Refreshed ID token is inconsistent with the refreshed access token (OIDC Core §12.2 'iss'/'sub'); refusing to apply the refresh |Logged when a refreshed ID token is inconsistent with the refreshed access token
+|TokenSheriffClient-110 |TOKEN |Authorization server granted a narrower scope than requested on refresh; granted '%s', requested '%s' |Logged when the scope granted on refresh is a strict subset of the requested scope; the refresh is accepted in both the lenient default and the opt-in strict posture
+|TokenSheriffClient-111 |TOKEN |Authorization server granted a broader scope than requested on refresh; granted '%s', requested '%s' |Logged when the scope granted on refresh contains a scope that was not requested; an anomaly report, not a violation notice — the refresh is accepted in the lenient default and refused only when `strictScopeReconciliation` is enabled
 |===
 
 === Client ERROR Level (200)

@@ -197,6 +197,30 @@ class ClientConfigurationTest {
     }
 
     @Test
+    @DisplayName("Should default strict scope reconciliation to false so a broadened grant is reported, not refused")
+    void shouldDefaultStrictScopeReconciliationToFalse() {
+        var defaulted = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).build();
+
+        assertFalse(defaulted.isStrictScopeReconciliation(),
+                "the lenient posture is the default: refusing a broadened grant out of the box would turn an "
+                        + "authorization-server quirk into an authentication outage with no attacker in the loop");
+    }
+
+    @Test
+    @DisplayName("Should round-trip an explicitly enabled strict scope reconciliation")
+    void shouldRoundTripExplicitStrictScopeReconciliation() {
+        var strict = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .strictScopeReconciliation(true).build();
+
+        assertTrue(strict.isStrictScopeReconciliation(),
+                "a deployment that opts in to the strict posture must see the flag survive construction");
+    }
+
+    @Test
     @DisplayName("Should reject a null issuer, client id or auth method")
     void shouldRejectNullRequiredFields() {
         var clientId = Generators.nonBlankStrings().next();
