@@ -182,6 +182,24 @@
                     <release>21</release>
                 </configuration>
             </plugin>
+            <!-- Re-attach the JaCoCo agent to the unit-test tier on the DEFAULT lane.
+                 cui-java-parent configures Surefire with a literal <argLine>-Xms64m -Xmx1024m</argLine>,
+                 which REPLACES rather than extends the argLine property that jacoco:prepare-agent sets at
+                 initialize — so on a plain `mvn verify` the unit tests ran un-instrumented and the only
+                 coverage reaching target/jacoco.exec came from the Failsafe tier (which inherits no argLine
+                 override). Measured: the default lane reported BUNDLE BRANCH 0.200 while `-Pcoverage`
+                 reported 0.851 over the identical tree. That made the always-active refresh-path check below
+                 unsatisfiable, and it also made target/site/jacoco/jacoco.xml — published on every default
+                 build — an IT-only report that silently understates coverage.
+                 @{argLine} is Surefire's late-replacement syntax: it resolves after prepare-agent has run,
+                 so the agent is prepended to the JVM args the parent already sets. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine} -Xms64m -Xmx1024m</argLine>
+                </configuration>
+            </plugin>
             <!-- Bind Failsafe so the wired-flow integration tier (WiredFlowNegativePathIT, which uses
                  MockWebServer — no external infra) actually runs under `mvn verify`. The *IT class was
                  previously compiled but never executed because no Failsafe binding existed here. -->
@@ -212,6 +230,60 @@
                         <exclude>**/_*_DslJsonConverter*.class</exclude>
                     </excludes>
                 </configuration>
+                <!-- Refresh-path coverage gate, bound to the always-active lane (NOT a profile) so it runs
+                     under the CI invocation: .github/workflows/maven.yml delegates the whole Maven lane to
+                     the external SHA-pinned cuioss/cuioss-organization reusable workflow, which this
+                     repository cannot hand a -P flag.
+
+                     Why element=CLASS and not BUNDLE: the module-wide BUNDLE rule inherited from
+                     cui-java-parent (-Pcoverage, BRANCH >= 0.80) cannot see a refresh-path regression. At the
+                     time this gate was written the bundle carried ~29 branches of slack above 0.80 while the
+                     entire refresh path was ~29 covered branches, so a TOTAL refresh-path coverage wipeout
+                     still landed above the bundle floor and passed. The blind spot is granularity, not
+                     threshold — hence a per-class rule scoped to the five refresh-path classes.
+
+                     Why the include entries are dotted FQCNs: jacoco matches an element=CLASS rule against
+                     JavaNames.getQualifiedClassName(vmName), i.e. the DOTTED name (nested classes render as
+                     Outer.Inner, never Outer$Inner) — not the VM/internal slash form. A misspelled entry is
+                     NOT an error: BundleChecker simply never evaluates a limit for it and jacoco:check reports
+                     "All coverage checks have been met." So the failure mode of an edit here is a FALSE GREEN
+                     that silently recreates the blind spot this gate exists to close. When adding a
+                     refresh-path class, use the dotted form and confirm the gate still fires. -->
+                <executions>
+                    <execution>
+                        <id>refresh-path-coverage-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>de.cuioss.sheriff.token.client.flow.RefreshFlow</include>
+                                        <include>de.cuioss.sheriff.token.client.token.RotationResult</include>
+                                        <include>de.cuioss.sheriff.token.client.token.RefreshTokenFamily</include>
+                                        <include>de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler</include>
+                                        <include>de.cuioss.sheriff.token.client.lifecycle.InMemoryTokenStore</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>INSTRUCTION</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
