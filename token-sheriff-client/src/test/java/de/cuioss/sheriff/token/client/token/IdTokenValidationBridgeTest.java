@@ -21,6 +21,7 @@ import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
+import de.cuioss.sheriff.token.validation.test.InMemoryKeyMaterialHandler;
 import de.cuioss.sheriff.token.validation.test.JwtTokenTamperingUtil;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -186,6 +187,80 @@ class IdTokenValidationBridgeTest {
         String rawToken = holder.getRawToken();
 
         assertThrows(NullPointerException.class, () -> bridge.validateIdToken(rawToken, nonce, null));
+    }
+
+    /**
+     * Re-mints the fixture under {@code algorithm} and re-binds the bridge to the matching issuer
+     * config, so the ID token's JWS {@code alg} — and with it the {@code at_hash} digest the
+     * production seam selects — is the one under test.
+     */
+    private void reMintUnder(InMemoryKeyMaterialHandler.Algorithm algorithm) {
+        holder = TestTokenGenerators.idTokens().next().withSigningAlgorithm(algorithm);
+        bridge = new IdTokenValidationBridge(
+                TokenValidator.builder().issuerConfig(holder.getIssuerConfig()).build());
+    }
+
+    // AC-2. The at_hash digest is selected from the ID token's JWS `alg` suffix (384 / 512 / else),
+    // so the two cases below reach the SHA-384 and SHA-512 branches of `accessTokenHashDigest` that
+    // the SHA-256-only cases above never exercise. RS384/RS512 stand in for the outline's nominal
+    // HS384/HS512: the test key-material harness mints asymmetric keys only, and the pipeline's
+    // algorithm preferences reject HMAC-signed tokens outright, so an HS-signed fixture cannot reach
+    // the digest seam at all. Branch selection keys on the numeric suffix, not the key family, so
+    // RS384/RS512 exercise exactly the branches AC-2 targets.
+
+    /**
+     * Drives the {@code at_hash} binding under the currently minted signing algorithm: a correctly
+     * computed hash validates, and a foreign access token does not. Shared by the two AC-2 cases so
+     * each names only the algorithm whose digest branch it pins.
+     */
+    private void assertAtHashBindingUnderCurrentAlgorithm(String algorithmLabel) {
+        String nonce = Generators.letterStrings(20, 40).next();
+        String accessToken = Generators.letterStrings(20, 40).next();
+        holder.withClaim(NONCE_CLAIM, ClaimValue.forPlainString(nonce));
+        holder.withClaim(AT_HASH_CLAIM, ClaimValue.forPlainString(atHash(holder.getRawToken(), accessToken)));
+        String rawToken = holder.getRawToken();
+
+        IdTokenContent content = bridge.validateIdToken(rawToken, nonce, accessToken);
+
+        assertAll("at_hash binding under " + algorithmLabel,
+                () -> assertNotNull(content, "a correctly bound at_hash must validate under " + algorithmLabel),
+                () -> assertThrows(ClientProtocolException.class,
+                        () -> bridge.validateIdToken(rawToken, nonce, Generators.letterStrings(41, 60).next()),
+                        "a foreign access token must not satisfy the " + algorithmLabel + " at_hash binding"));
+    }
+
+    @Test
+    @DisplayName("Should verify at_hash under the SHA-384 digest a 384-bit JWS alg selects (AC-2)")
+    void shouldVerifyAtHashUnderSha384() {
+        reMintUnder(InMemoryKeyMaterialHandler.Algorithm.RS384);
+
+        assertAtHashBindingUnderCurrentAlgorithm("RS384");
+    }
+
+    @Test
+    @DisplayName("Should verify at_hash under the SHA-512 digest a 512-bit JWS alg selects (AC-2)")
+    void shouldVerifyAtHashUnderSha512() {
+        reMintUnder(InMemoryKeyMaterialHandler.Algorithm.RS512);
+
+        assertAtHashBindingUnderCurrentAlgorithm("RS512");
+    }
+
+    @Test
+    @DisplayName("Should validate a refreshed ID token through the pipeline without asserting a nonce (AC-3)")
+    void shouldValidateRefreshedIdTokenWithoutNonce() {
+        holder.withoutClaim(NONCE_CLAIM);
+        String rawToken = holder.getRawToken();
+
+        IdTokenContent content = bridge.validateRefreshedIdToken(rawToken);
+
+        assertAll("refreshed ID token",
+                () -> assertNotNull(content,
+                        "a nonce-less refreshed ID token must validate — OIDC Core §12.2 says it SHOULD NOT carry one"),
+                () -> assertThrows(TokenValidationException.class,
+                        () -> bridge.validateRefreshedIdToken(
+                                JwtTokenTamperingUtil.applyTamperingStrategy(rawToken,
+                                        JwtTokenTamperingUtil.TamperingStrategy.MODIFY_SIGNATURE_LAST_CHAR)),
+                        "skipping the nonce check must not skip pipeline validation"));
     }
 
     /**
