@@ -15,13 +15,16 @@ Threat model for the `client` capability — the server-side confidential-client
 *acquisition and flow* threats: authorization-code injection, mix-up between multiple
 authorization servers, callback CSRF, redirect-URI abuse, weak client credentials, token
 replay, insufficient authentication assurance, and logout that leaves tokens live — plus the
-server-side *token-lifecycle* threats of refresh-token theft, audience confusion and
-sender-constraint loss.
+server-side *token-lifecycle* threats of refresh-token theft, audience confusion,
+sender-constraint loss, a substituted principal on refresh, and undetected granted-scope drift.
 
 The catalog builds on the foundational OAuth 2.0 threat model
 (https://www.rfc-editor.org/rfc/rfc6819[RFC 6819]) and the current OAuth 2.0 Security BCP
-(https://www.rfc-editor.org/rfc/rfc9700[RFC 9700]). Each entry cites a source, a mitigation,
-and the covering `CLIENT-N` requirement, grouped by aspect. Threats are kept *separate by
+(https://www.rfc-editor.org/rfc/rfc9700[RFC 9700]). Those two are the catalog's general
+foundation, not a blanket warrant for every entry. Each entry cites *its own* source, a
+mitigation, and the covering `CLIENT-N` requirement, grouped by aspect —
+and <<T-SCOPE-DRIFT>> in particular is recorded as prudent hardening with no RFC mandate
+behind it. Threats are kept *separate by
 aspect* and *not blended* with the transport or token-trust threats owned elsewhere
 (<<_out_of_scope_delegated>>).
 
@@ -199,7 +202,69 @@ The client engine:
   and forwarding; preserve the constraint on refresh; keep storage minimal.
 | https://www.rfc-editor.org/rfc/rfc9449[RFC 9449], https://www.rfc-editor.org/rfc/rfc8705[RFC 8705]
 | xref:requirements.adoc#CLIENT-18[CLIENT-18]
+
+| [[T-REFRESH-IDENTITY]]T-REFRESH-IDENTITY
+| *Substituted principal on refresh.* A refresh exchange returns an access token naming a
+  different `sub` than the session was established for — through an authorization-server defect,
+  a mis-scoped client, or a swapped refresh token — silently re-pointing a live session at
+  another user. The authorization-code path already binds the session four ways (`state`,
+  `nonce`, `at_hash`, `iss`); until this control the refresh path carried *no* identity binding
+  at all, and that asymmetry was the gap.
+| Bind the stored session to the `sub` of the validated access token (`StoredToken.subject`). On
+  every refresh, the subject of the newly validated access token is compared against the bound
+  subject in constant time; a mismatch *refuses the refresh fail-closed* and leaves the stored
+  bundle untouched, rather than overwriting it. Where the authorization server also returns a
+  refreshed ID token, it is validated and cross-checked for `iss`/`sub` consistency against the
+  refreshed access token before it is carried forward.
+| https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse[OIDC Core §12.2]
+| xref:requirements.adoc#CLIENT-15[CLIENT-15], xref:requirements.adoc#CLIENT-17[CLIENT-17]
+
+| [[T-SCOPE-DRIFT]]T-SCOPE-DRIFT
+| *Undetected granted-scope drift.* The authorization server grants a scope set other than the
+  one requested — broader or narrower — and the client neither notices nor reports it, so a
+  privilege delta reaches the application unremarked and undiagnosable after the fact.
+| Reconcile the granted `scope` against the requested scope on every refresh and surface the
+  outcome on `RotationResult` (`grantedScope`, `scopeDelta`); a broadened or narrowed grant is
+  additionally `WARN`-logged. This is *anomaly reporting, not enforcement* — see the normative
+  register below: a broadened grant is accepted by default and refused only under the opt-in
+  `strictScopeReconciliation` posture.
+| https://www.rfc-editor.org/rfc/rfc6749#section-3.3[RFC 6749 §3.3], https://www.rfc-editor.org/rfc/rfc6749#section-5.1[RFC 6749 §5.1]
+| xref:requirements.adoc#CLIENT-17[CLIENT-17]
 |===
+
+[NOTE]
+====
+*The scope reconciliation is prudent hardening, not a mandated mitigation.* No published RFC
+obliges an OAuth client to reject a grant broader than the one it requested.
+https://www.rfc-editor.org/rfc/rfc6749#section-3.3[RFC 6749 §3.3] affirmatively *permits* the
+authorization server to grant a scope other than the one requested, obliging it only to disclose
+the result through the `scope` response parameter, and the *resource server* — not this client —
+remains the enforcement point for an over-broad claim. `T-SCOPE-DRIFT` is therefore recorded as an
+observability control: it makes a delta visible and actionable, and it does not claim a
+specification violation on the authorization server's part.
+
+The strict posture's only profile precedent is FAPI 1.0 Part 1 §5.2.3(10) — an
+authorization-code-response rule that FAPI 2.0 dropped. That thin precedent is precisely why the
+strict mode is opt-in rather than the default.
+====
+
+=== Residual risks
+
+Both controls above leave a residual exposure, recorded here rather than implied away:
+
+* *A session stored without a known subject is not bound.* `StoredToken.subject` is nullable: when
+  a session is established before the principal is known, the first refresh has no bound subject to
+  compare against and therefore adopts the refreshed subject instead of refusing. The binding takes
+  effect from that point on. A deployment that stores sessions without a subject gets rotation and
+  reuse detection but *not* `T-REFRESH-IDENTITY` coverage on the first refresh.
+* *Strict scope reconciliation converts an authorization-server quirk into an authentication
+  outage.* Several major authorization servers canonicalise or expand scope sets as a matter of
+  course. Under `strictScopeReconciliation=true` every such response refuses the refresh with no
+  attacker in the loop. The outage risk falls entirely on the deployment that opts in, which is why
+  the lenient, reporting posture is the default.
+* *Reconciliation is skipped when no scope was requested.* With an empty configured scope set there
+  is no baseline to compare against, so every grant classifies as `UNDECLARED` and no delta is
+  reported. Requesting an explicit scope is what makes the control effective.
 
 == Adversarial test coverage
 
@@ -222,6 +287,8 @@ integration suite covers only threats reproducible against real providers:
 | T-TOKEN-REPLAY / T-CONSTRAINT-LOSS | `TokenDispatcher` issues DPoP / mTLS-bound responses; the binding is validated and preserved through storage/refresh.
 | T-LOGOUT | `EndSessionDispatcher` adversarial mode returns open-redirect / mismatched `post_logout_redirect_uri`, which are rejected; revocation of held tokens asserted.
 | T-REFRESH-THEFT | `TokenDispatcher` refresh mode drives rotation; a reused rotated token triggers family revocation.
+| T-REFRESH-IDENTITY | `TokenDispatcher` refresh mode returns an access token carrying a substituted `sub`; the refresh is refused and the stored bundle asserted untouched. A matched positive control — a refresh whose `sub` matches — is asserted to be accepted and to rotate the bundle, so deleting the guard turns a test red rather than merely leaving one green.
+| T-SCOPE-DRIFT | `TokenDispatcher` refresh mode returns broadened, narrowed, equal and absent `scope` values; each is asserted to resolve to the matching `scopeDelta`, and the broadened case is asserted accepted-and-`WARN`-logged in the default posture and refused with `ClientProtocolException` under `strictScopeReconciliation`.
 | T-IDTOKEN-INTEGRITY / T-AUD-CONFUSION | `TokenDispatcher` / `UserInfoDispatcher` emit tampered claims and `sub` mismatches; validation pipeline rejects; userinfo `sub` binding enforced.
 | T-SSRF-ADVERTISED | The `de.cuioss.http.security` attack-database corpora are driven through the back-channel egress-path validation; traversal / injection / encoding-evasion advertised paths are refused before any fetch, and a non-TLS endpoint is refused per client.
 |===
