@@ -46,6 +46,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -368,6 +369,53 @@ class RefreshAdversarialTest extends RefreshTestSupport {
         assertEquals(originalIdToken, refreshed.idToken(),
                 "a blank refreshed id_token is treated as omitted, so the stored ID token is kept");
         LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TokenLifecycleManager.class);
+    }
+
+    @Test
+    @DisplayName("Should still accept the next legitimate refresh after a substituted-subject refusal rotated the family")
+    void shouldNotMisclassifyNextRefreshAsReuseAfterSubjectRefusal(URIBuilder uriBuilder) {
+        ClientConfiguration config = config();
+        ProviderMetadata metadata = metadata(uriBuilder);
+        RefreshFlow flow = refreshFlow(config);
+        var revocationClient = new RecordingRevocationClient(config);
+        TokenLifecycleManager manager = manager();
+        String boundSubject = Generators.letterStrings(10, 15).next();
+        String session = Generators.letterStrings(10, 20).next();
+        String rt1 = Generators.letterStrings(20, 40).next();
+        manager.store(session, boundBundle(rt1, boundSubject));
+
+        // First attempt: the AS rotates the refresh token, but the refreshed access token names a
+        // different principal. The refresh must be refused and the store must keep rt1 untouched.
+        accessHolder.withClaim(ClaimName.SUBJECT.getName(),
+                ClaimValue.forPlainString(boundSubject + Generators.letterStrings(3, 5).next()));
+        String rejectedRotatedToken = Generators.letterStrings(20, 40).next();
+        getModuleDispatcher().respondWith(
+                TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rejectedRotatedToken, null, 300));
+        var clientAuth = clientAuth(config);
+        assertThrows(IllegalStateException.class,
+                () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
+        assertEquals(rt1, manager.get(session).orElseThrow().refreshToken(),
+                "the store keeps rt1 after the identity-mismatch refusal");
+
+        // Second attempt: the legitimate caller retries with the still-stored rt1 (the only token it
+        // ever saw) and the AS now names the correct principal. Without the family revert, rt1 would
+        // already have been superseded by the first attempt's (rejected) rotation and this call would
+        // be misclassified as reuse, revoking the family and clearing a session that was never actually
+        // compromised.
+        accessHolder.withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(boundSubject));
+        String rt2 = Generators.letterStrings(20, 40).next();
+        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rt2, null, 300));
+
+        StoredToken refreshed = assertDoesNotThrow(
+                () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth(config)),
+                "the still-valid, still-stored rt1 must not be misclassified as reuse")
+                .orElseThrow();
+
+        assertAll("legitimate retry succeeds",
+                () -> assertEquals(rt2, refreshed.refreshToken(), "the retry rotates to the AS-issued successor"),
+                () -> assertEquals(boundSubject, refreshed.subject(), "the bound principal survives the retry"),
+                () -> assertFalse(revocationClient.revokedAny(),
+                        "the legitimate retry must never trigger RFC 7009 revocation"));
     }
 
     /** A bundle bound to {@code subject}, so the refresh-path identity check has a baseline to enforce. */

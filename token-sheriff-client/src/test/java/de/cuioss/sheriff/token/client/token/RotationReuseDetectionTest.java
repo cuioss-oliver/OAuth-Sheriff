@@ -25,6 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -79,6 +80,59 @@ class RotationReuseDetectionTest {
                 () -> assertThrows(ClientProtocolException.class, family::currentToken,
                         "a revoked family must not expose a current token"));
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "Refresh token reuse detected");
+    }
+
+    @Test
+    @DisplayName("Should undo a tentative rotation so the presented token is current again")
+    void shouldRevertRotationBackToPresentedToken() {
+        String initial = Generators.letterStrings(20, 40).next();
+        String next = Generators.letterStrings(20, 40).next();
+        var family = new RefreshTokenFamily(initial);
+        family.rotate(initial, next);
+
+        family.revertRotation(initial, next);
+
+        assertAll("after revert",
+                () -> assertFalse(family.isRevoked(), "reverting a tentative rotation must not revoke the family"),
+                () -> assertEquals(initial, family.currentToken(),
+                        "the presented token must become current again"),
+                () -> assertDoesNotThrow(() -> family.rotate(initial, next),
+                        "the reverted token must be redeemable again, exactly as if the rotation never happened"));
+    }
+
+    @Test
+    @DisplayName("Should ignore a revert once the family moved past the rotation it targets")
+    void shouldIgnoreStaleRevert() {
+        String initial = Generators.letterStrings(20, 40).next();
+        String next = Generators.letterStrings(20, 40).next();
+        String afterNext = Generators.letterStrings(20, 40).next();
+        var family = new RefreshTokenFamily(initial);
+        family.rotate(initial, next);
+        family.rotate(next, afterNext);
+
+        // A revert naming the now-superseded 'initial -> next' step must not claw the family back past
+        // the legitimate 'next -> afterNext' rotation that has since happened.
+        family.revertRotation(initial, next);
+
+        assertEquals(afterNext, family.currentToken(),
+                "a stale revert must not undo a later, unrelated rotation");
+    }
+
+    @Test
+    @DisplayName("Should ignore a revert once the family has been revoked by reuse detection")
+    void shouldIgnoreRevertOnRevokedFamily() {
+        String initial = Generators.letterStrings(20, 40).next();
+        String next = Generators.letterStrings(20, 40).next();
+        String attackerNext = Generators.letterStrings(20, 40).next();
+        var family = new RefreshTokenFamily(initial);
+        family.rotate(initial, next);
+        assertThrows(ClientProtocolException.class, () -> family.rotate(initial, attackerNext));
+
+        family.revertRotation(initial, next);
+
+        assertAll("revoked family stays revoked",
+                () -> assertTrue(family.isRevoked(), "a revert must not un-revoke a family"),
+                () -> assertThrows(ClientProtocolException.class, family::currentToken));
     }
 
     @Test

@@ -87,6 +87,41 @@ public class RefreshTokenFamily {
     }
 
     /**
+     * Reverts a tentative {@link #rotate} when the write it was performed for is subsequently
+     * refused, so the family stays in agreement with a store that was never actually updated.
+     * <p>
+     * {@link #rotate} advances {@link #currentToken} the moment it confirms {@code presentedToken}
+     * was current; it has no visibility into what the caller does with that outcome next. When the
+     * caller's own downstream write is then refused — for example a stored session's identity or
+     * sender-constraint binding check rejects the refresh — the caller's persisted state (the token
+     * store) keeps the pre-refresh token, but this family has already moved past it. Left uncorrected,
+     * the next legitimate redemption presents that still-valid, still-stored token, which the family
+     * now sees as superseded and misclassifies as reuse — self-inflicting a revoke-and-clear of a
+     * session that was never actually compromised.
+     * <p>
+     * Only takes effect when {@link #currentToken} is still exactly {@code rotatedToken} (the value
+     * this family's own {@link #rotate} just installed) and the family has not been revoked: a no-op
+     * otherwise, so a family already advanced again by a later redemption, or revoked by a genuine
+     * reuse detection in the meantime, is left untouched rather than clobbered by a stale revert.
+     *
+     * @param presentedToken the token to restore as current; must not be {@code null} or blank
+     * @param rotatedToken   the tentatively-installed successor to revert, iff still current; must not
+     *                       be {@code null} or blank
+     */
+    public void revertRotation(String presentedToken, String rotatedToken) {
+        requireNonBlank(presentedToken);
+        requireNonBlank(rotatedToken);
+        lock.lock();
+        try {
+            if (!revoked && rotatedToken.equals(currentToken)) {
+                currentToken = presentedToken;
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * @return whether this family has been revoked (by reuse detection)
      */
     public boolean isRevoked() {
