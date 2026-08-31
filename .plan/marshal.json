@@ -44,7 +44,7 @@
       "max_iterations": 5,
       "per_deliverable_build": [
         "default:verify:compile",
-        "default:verify:module-tests"
+        "default:verify:verify"
       ],
       "cost_size_token_table": {
         "XS": "5K",
