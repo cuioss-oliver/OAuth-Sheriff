@@ -466,7 +466,8 @@ complementary — no one of them subsumes another.
 
 | *`-Pcoverage` bundle gate*
 | The whole `token-sheriff-client` module
-| The module bundle drops below `BRANCH >= 0.80` (inherited from `cui-java-parent`)
+| The module bundle drops below `INSTRUCTION >= 0.80` or `BRANCH >= 0.80` — the inherited
+  `cui-java-parent` rule is `element=BUNDLE` and gates both counters
 | *No* — opt-in, local only
 
 | *SonarCloud new-code gate*

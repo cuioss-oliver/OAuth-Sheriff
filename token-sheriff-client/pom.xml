@@ -236,7 +236,8 @@
                      repository cannot hand a -P flag.
 
                      Why element=CLASS and not BUNDLE: the module-wide BUNDLE rule inherited from
-                     cui-java-parent (-Pcoverage, BRANCH >= 0.80) cannot see a refresh-path regression. At the
+                     cui-java-parent (-Pcoverage; element=BUNDLE, gating both INSTRUCTION >= 0.80 and
+                     BRANCH >= 0.80) cannot see a refresh-path regression. At the
                      time this gate was written the bundle carried ~29 branches of slack above 0.80 while the
                      entire refresh path was ~29 covered branches, so a TOTAL refresh-path coverage wipeout
                      still landed above the bundle floor and passed. The blind spot is granularity, not
