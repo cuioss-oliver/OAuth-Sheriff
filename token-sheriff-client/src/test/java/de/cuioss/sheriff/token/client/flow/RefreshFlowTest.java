@@ -79,6 +79,19 @@ class RefreshFlowTest {
                 .build();
     }
 
+    private static ClientConfiguration configWithScopes(String... scopes) {
+        var builder = ClientConfiguration.builder()
+                .issuer("https://" + Generators.letterStrings(3, 10).next() + ".example.com")
+                .clientId(Generators.letterStrings(5, 12).next())
+                .clientSecret(Generators.letterStrings(8, 20).next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .allowInsecureHttp(true);
+        for (String scope : scopes) {
+            builder.scope(scope);
+        }
+        return builder.build();
+    }
+
     private static ProviderMetadata metadata(URIBuilder uriBuilder) {
         var metadata = new ProviderMetadata();
         metadata.tokenEndpoint = uriBuilder.addPathSegments("oidc", "token").buildAsString();
@@ -200,5 +213,35 @@ class RefreshFlowTest {
                         () -> flow.refresh(null, refreshToken)),
                 () -> assertThrows(NullPointerException.class, () -> flow.refresh(metadata, null)),
                 () -> assertThrows(IllegalArgumentException.class, () -> flow.refresh(metadata, "   ")));
+    }
+
+    @Test
+    @DisplayName("Should send the configured scopes as a space-delimited scope parameter")
+    void shouldSendConfiguredScopesOnTheWire(URIBuilder uriBuilder, MockWebServer server) throws Exception {
+        moduleDispatcher.respondWith(TokenDispatcher.tokenResponse(holder.getRawToken(),
+                Generators.letterStrings(20, 40).next(), null, 300));
+        ClientConfiguration config = configWithScopes("openid", "profile");
+
+        flow(config).refresh(metadata(uriBuilder), Generators.letterStrings(20, 40).next());
+
+        RecordedRequest request = server.takeRequest();
+        String body = request.getBody() == null ? "" : request.getBody().utf8();
+        assertTrue(body.contains("scope=openid+profile"),
+                "configured scopes must be sent space-delimited as the scope parameter, but body was: " + body);
+    }
+
+    @Test
+    @DisplayName("Should reuse the presented token when the AS returns a blank refresh token")
+    void shouldReusePresentedTokenWhenServerReturnsBlankRefreshToken(URIBuilder uriBuilder) {
+        moduleDispatcher.respondWith(TokenDispatcher.tokenResponse(holder.getRawToken(), "", null, 300));
+        String presented = Generators.letterStrings(20, 40).next();
+
+        RotationResult result = flow(config()).refresh(metadata(uriBuilder), presented);
+
+        assertAll("blank rotated token",
+                () -> assertEquals(presented, result.refreshToken(),
+                        "a blank refresh token is no rotation — the presented token stays in use"),
+                () -> assertFalse(result.rotated(),
+                        "a blank refresh token must not be reported as a rotation"));
     }
 }

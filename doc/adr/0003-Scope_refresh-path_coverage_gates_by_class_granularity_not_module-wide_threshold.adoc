@@ -1,0 +1,155 @@
+= ADR-0003: Scope refresh-path coverage gates by class granularity, not module-wide threshold
+
+// adr-metadata
+// summary: A regression confined to a small subset of a module needs a granularity-matched gate; a module-wide threshold, however tuned, dilutes it to invisibility
+// tags: coverage, jacoco, quality-gate, testing
+// affects: token-sheriff-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+An audit of `token-sheriff-client` found seventeen coverage gaps on the token-refresh path, and its
+second-order finding was that not one of them could turn the build red. Closing that blind spot
+required settling how a coverage gate should be scoped.
+
+A coverage gate exists to fail the build when a critical code path loses test coverage. When that
+gate is expressed as a single threshold aggregated over an entire module, it cannot distinguish a
+regression confined to a small critical subset from ordinary variance across the module's much
+larger branch population. Any subset whose lost coverage is smaller than the module's existing
+headroom above the floor is invisible to the aggregate measurement, however the floor is tuned.
+
+The measurement that settled this, taken at the commit preceding the change:
+
+* The module reported INSTRUCTION 6342/6845 = 0.9265 and BRANCH 502/591 = 0.8494.
+* The refresh path accounts for **29 of those 502 covered branches**.
+* The module carries **exactly 29 branches of slack** above the inherited `BUNDLE` rule's 0.80
+  BRANCH floor.
+
+The two figures coincide, and that coincidence is the whole finding: a *total* wipeout of
+refresh-path coverage lands the bundle at 473/591 = **0.8003** — still above the floor, still
+green. The blind spot is structural, not a tuning defect. Raising or lowering the floor only moves
+which subset sizes go undetected.
+
+A second, independent constraint governs how any gate here can be *activated*:
+`.github/workflows/maven.yml` delegates the entire Maven lane to an externally owned, SHA-pinned
+reusable workflow (`cuioss/cuioss-organization`), so this repository cannot pass a profile-activation
+flag into CI. A gate that must run in CI therefore has to live in the module's always-active
+`<build><plugins>` configuration, never behind an opt-in profile that CI never exercises. This
+constrains every future default-lane gating decision in this repository, independent of this
+gate's subject matter.
+
+== Decision
+
+When a regression class is confined to a small, known subset of a larger unit, the gate's
+*granularity* — not its threshold — is the variable that determines whether the regression is
+detectable at all. The correct response to a dilution blind spot is to narrow the measurement's
+scope to the at-risk subset, not to retune the threshold at the existing, too-coarse scope.
+
+The gate is therefore a `CLASS`-element JaCoCo `check` rule scoped by an explicit `<includes>` list
+to exactly the five classes that own the refresh path, bound inside the module's always-active
+`<build><plugins>` section so it participates in the default lane — including CI — with no
+profile flag. Its floors are `BRANCH >= 0.80` and `INSTRUCTION >= 0.90`, set with real margin above
+the scoped classes' measured coverage once their own gaps were closed, rather than at the tightest
+value that merely clears at the current commit.
+
+== Consequences
+
+*Positive:*
+
+* A regression confined to the scoped classes is caught unconditionally on the default build lane,
+  independent of how much unrelated headroom the rest of the module carries.
+* The mechanism requires no CI workflow change, because it lives entirely inside the module's
+  always-active build configuration — which the externally-owned CI lane makes a hard requirement
+  rather than a preference.
+* The scoped gate joins two other coverage instruments in a division of labour along orthogonal
+  axes, rather than replacing either:
++
+--
+** The opt-in `-Pcoverage` aggregate gate inherited from `cui-java-parent` (`element=BUNDLE`,
+   gating both `INSTRUCTION >= 0.80` and `BRANCH >= 0.80`) is the **module-wide baseline**. It
+   aggregates the entire module — the five scoped classes included — so it is not a gate over the
+   complement of the scoped set; the two overlap by construction, and the scoped rule exists
+   because the aggregate cannot resolve its subset, not because it excludes it. It is local-only;
+   CI never runs it.
+** The SonarCloud new-code gate measures coverage only on lines a change touches. It is
+   structurally blind to the regression class the scoped gate exists to catch: a change that merely
+   stops exercising an already-existing line never appears in a new-code diff, so a new-code gate
+   cannot see coverage removed from *existing* lines.
+--
++
+The three are therefore a module-wide baseline, a class-scoped regression gate, and a changed-line
+gate. The scoped gate and the new-code gate are complementary in particular: the new-code gate is
+*scoped to* changed lines, whereas the scoped rule measures each named class's coverage in full and
+so responds to coverage removed from lines the change never touched. Neither subsumes the other.
+
+*Negative / Risks:*
+
+* The `<includes>` list is hand-maintained. A class added to the refresh path later must be added
+  explicitly.
+* An entry that stops matching any real class (a rename, a package move, a misspelling) makes the
+  rule evaluate against **zero classes and report success** rather than error — JaCoCo's
+  `BundleChecker` simply never invokes a limit, and `jacoco:check` logs
+  `All coverage checks have been met.` A green build is therefore *not* evidence the rule bound to
+  anything. Extending or renaming a scoped class requires positively re-verifying that the rule
+  still fires, and the include entries must stay in dotted FQCN form
+  (`JavaNames.getQualifiedClassName` converts the VM name, so nested classes render `Outer.Inner`,
+  never `Outer$Inner`).
+* The whole-module aggregate gate is untouched by this decision and keeps its own dilution weakness
+  for any regression the scoped rule does not cover.
+
+== Alternatives Considered
+
+*Activate the inherited whole-module `BUNDLE` rule on the default lane.* Rejected on the arithmetic
+above: the refresh path is 29 of 502 covered branches and the bundle carries exactly 29 branches of
+slack, so a total refresh-path wipeout lands at 0.8003 and passes. This alternative was the
+originally-assumed remedy; measuring it is what disproved it.
+
+*Narrow the granularity to `PACKAGE` at 0.80.* Rejected: measured red at the current commit — the
+`client/token` package sits at 0.780 BRANCH, already below the intended floor. A gate that fires
+immediately on pre-existing debt it was never meant to police is not shippable.
+
+*Narrow to `CLASS` at 0.80 but apply it module-wide rather than scoped.* Rejected: measured red on
+six classes unrelated to the refresh path — `TokenEndpointClient` 0.538, `ParClient` 0.571,
+`UserInfoClient` 0.647, `TokenLifecycleManager` 0.656, `DiscoveryResolver` 0.667,
+`IdTokenValidationBridge` 0.750. The finer granularity is right; the wrong scope reintroduces
+exactly the false-positive problem finer granularity was meant to solve.
+
+*Keep the `BUNDLE` rule but ratchet it tighter, e.g. `BRANCH >= 0.85`.* Rejected as flake-prone: two
+clean runs over the identical tree differed by 2 branches (502 vs 504), and the run with *fewer*
+tests scored *higher* — consistent with timing-sensitive scheduler and concurrency tests. A 0.85
+floor leaves roughly 5 branches of slack, so failures uncorrelated with any real regression become
+likely. A flaky gate erodes trust faster than an absent one.
+
+All four share one underlying failure: each keeps the measurement at a granularity coarser than the
+at-risk path (diluting it into invisibility), or applies the correct finer granularity at the wrong
+scope (reintroducing false positives from unrelated debt at that same finer granularity). Neither
+error is fixable by retuning the threshold alone.
+
+== Generalisation
+
+When an aggregate-metric gate exists to catch a regression confined to a known subset of a larger
+unit, the design question to ask first is *"at what granularity does this regression become
+visible"*, not *"what threshold value detects it"*. An aggregate measured at too coarse a level can
+always be diluted by unrelated headroom elsewhere in the same aggregate, however the threshold is
+tuned; only narrowing the measurement's scope to the at-risk subset restores detectability.
+
+The corollary: the finer granularity must also be *scoped* to the at-risk subset. Applying it
+uniformly across the whole aggregate reintroduces false positives from unrelated pre-existing debt
+at that same finer granularity, which is exactly as unshippable as the original coarse gate was
+undetecting.
+
+A third lesson, learned the expensive way while validating this gate: **a gate nobody has seen fail
+is not known to work.** The scoped rule's fail-silent mode (zero matches reports success) means the
+only proof it is bound is a negative control that turns the build red and names a scoped class in
+the violation message.
+
+== References
+
+* `token-sheriff-client/pom.xml` — the `refresh-path-coverage-check` execution and its maintainer note
+* `doc/client/specification/test-strategy.adoc` — Coverage gates section, the three-lane division
+* `AGENTS.md` — Coverage requirements, and the `clean`-before-measuring rule

@@ -56,8 +56,9 @@ This project uses CUI logging standards with Java Util Logging:
 ### Testing Framework
 - **Primary**: JUnit 5 (Jupiter)
 - **Test patterns**: AAA pattern (Arrange-Act-Assert)
-- **Coverage requirement**: Minimum 80% line and branch coverage
-- **Coverage check**: `./mvnw clean verify -Pcoverage`
+- **Coverage requirement**: two independent rules apply, at different granularities and on different lanes. The rule inherited from `cui-java-parent` is `element=BUNDLE` and gates **both** counters — `INSTRUCTION COVEREDRATIO >= 0.80` **and** `BRANCH COVEREDRATIO >= 0.80` — so it counts instructions and branches, never *lines*. It is declared inside the opt-in `coverage` profile, so a plain `./mvnw clean verify` never applies it. In `token-sheriff-client` the five refresh-path classes (`flow.RefreshFlow`, `token.RotationResult`, `token.RefreshTokenFamily`, `lifecycle.RefreshScheduler`, `lifecycle.InMemoryTokenStore`) carry a stricter per-class floor — `BRANCH >= 0.80` **and** `INSTRUCTION >= 0.90` — enforced on the **default** lane, so a plain `./mvnw clean verify` fails on a refresh-path coverage regression. See `doc/client/specification/test-strategy.adoc` § Coverage gates.
+- **Coverage check**: `./mvnw clean verify -Pcoverage` for the module-wide bundle rule; the refresh-path per-class gate needs no profile flag and already runs under `./mvnw clean verify`.
+- **Always measure with `clean`**: the JaCoCo agent writes `jacoco.exec` with its default `append=true`, so a coverage run without `clean` silently merges earlier runs and reports stale, inflated numbers.
 
 ### CUI Test Generator
 This project has CUI Test Generator dependencies available for test data generation:
