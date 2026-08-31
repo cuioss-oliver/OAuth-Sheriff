@@ -71,17 +71,21 @@ value that merely clears at the current commit.
 +
 --
 ** The opt-in `-Pcoverage` aggregate gate inherited from `cui-java-parent` (`element=BUNDLE`,
-   gating both `INSTRUCTION >= 0.80` and `BRANCH >= 0.80`) remains the module-wide quality bar for
-   everything outside the scoped classes. It is local-only; CI never runs it.
+   gating both `INSTRUCTION >= 0.80` and `BRANCH >= 0.80`) is the **module-wide baseline**. It
+   aggregates the entire module — the five scoped classes included — so it is not a gate over the
+   complement of the scoped set; the two overlap by construction, and the scoped rule exists
+   because the aggregate cannot resolve its subset, not because it excludes it. It is local-only;
+   CI never runs it.
 ** The SonarCloud new-code gate measures coverage only on lines a change touches. It is
    structurally blind to the regression class the scoped gate exists to catch: a change that merely
    stops exercising an already-existing line never appears in a new-code diff, so a new-code gate
    cannot see coverage removed from *existing* lines.
 --
 +
-The scoped default-lane gate and the new-code gate are therefore complementary — one covers the
-changed-lines axis, the other the existing-lines axis for the classes it scopes — and neither
-subsumes the other.
+The three are therefore a module-wide baseline, a class-scoped regression gate, and a changed-line
+gate. The scoped gate and the new-code gate are complementary in particular: the new-code gate is
+*scoped to* changed lines, whereas the scoped rule measures each named class's coverage in full and
+so responds to coverage removed from lines the change never touched. Neither subsumes the other.
 
 *Negative / Risks:*
 
