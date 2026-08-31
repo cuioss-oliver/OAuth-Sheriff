@@ -89,4 +89,16 @@ public final class ClientRuntimeConfig {
      * that ceiling.
      */
     public static final String DISCOVERY_DOCUMENT_MAX_SIZE = PREFIX + ".discovery-document-max-size";
+
+    /**
+     * Whether a refresh whose granted scope is <em>broader</em> than the requested scope is refused.
+     * Property: {@code sheriff.client.strict-scope-reconciliation}. Defaults to {@code false}.
+     * <p>
+     * At the default a broadened grant is accepted, {@code WARN}-logged and surfaced on
+     * {@code RotationResult}; enabling this refuses it with a {@code ClientProtocolException}. Enable
+     * it only against an authorization server known not to canonicalise or expand scope sets — see
+     * {@link de.cuioss.sheriff.token.client.config.ClientConfiguration} for the outage trade-off this
+     * opt-in carries.
+     */
+    public static final String STRICT_SCOPE_RECONCILIATION = PREFIX + ".strict-scope-reconciliation";
 }
