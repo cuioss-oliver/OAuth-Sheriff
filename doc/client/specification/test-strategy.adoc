@@ -446,7 +446,68 @@ This is the test-side complement of the per-increment definition of done. For ea
 * [ ] *Traceability*: each `CLIENT-N` the increment delivers is linked to code + unit test +
   integration test in <<_traceability>>.
 * [ ] Build green: `./mvnw -Ppre-commit clean verify` then `./mvnw clean install`; no source
-  artifacts; JaCoCo coverage recorded.
+  artifacts; JaCoCo coverage recorded (see <<_coverage_gates>>).
+
+== [[_coverage_gates]] Coverage gates
+
+Three coverage gates now guard this module, each answering a different question. They are
+complementary — no one of them subsumes another.
+
+[cols="1,2,2,1", options="header"]
+|===
+| Gate | Scope | Fails the build when | Runs in CI
+
+| *Default-lane scoped gate*
+| The five refresh-path classes only: `flow.RefreshFlow`, `token.RotationResult`,
+  `token.RefreshTokenFamily`, `lifecycle.RefreshScheduler`, `lifecycle.InMemoryTokenStore`
+| Any one of those classes drops below `BRANCH >= 0.80` or `INSTRUCTION >= 0.90`
+| *Yes* — bound in the always-active `<build><plugins>` section of
+  `token-sheriff-client/pom.xml`, so it needs no profile flag
+
+| *`-Pcoverage` bundle gate*
+| The whole `token-sheriff-client` module
+| The module bundle drops below `BRANCH >= 0.80` (inherited from `cui-java-parent`)
+| *No* — opt-in, local only
+
+| *SonarCloud new-code gate*
+| Only the lines a PR adds or changes
+| New/changed lines fall below the project's new-code coverage condition
+| *Yes* — on the PR
+|===
+
+*Why the scoped gate exists.* The SonarCloud new-code gate measures only what a PR touches, so a
+change that *removes* coverage from existing refresh-path lines is invisible to it. The
+`-Pcoverage` bundle gate is too coarse to see that change either: the module carries roughly as
+many branches of slack above its 0.80 floor as the entire refresh path has covered branches, so a
+total refresh-path coverage wipeout still clears the bundle floor. The blind spot is one of
+*granularity*, not threshold — hence a per-class rule over a named class list. The scoped gate and
+the SonarCloud gate answer different questions and neither replaces the other.
+
+*The scoped gate is not a module-wide quality bar.* It deliberately measures five classes. The
+module-wide instruments remain the SonarCloud new-code gate and the opt-in `-Pcoverage` bundle
+rule; other classes in the module carry their own, lower coverage and are out of this gate's scope
+by design.
+
+[NOTE]
+.Maintainer note — editing the gate's `<includes>`
+====
+Write each entry as the *dotted* fully-qualified class name
+(`de.cuioss.sheriff.token.client.flow.RefreshFlow`), never the VM/internal slash form. A nested
+class is `Outer.Inner`, never `Outer$Inner`. JaCoCo matches an `<element>CLASS</element>` rule
+against the dotted qualified name, and an entry that matches *nothing* is **not** an error — the
+rule is simply never evaluated and `jacoco:check` reports `All coverage checks have been met.` The
+failure mode of a typo here is therefore a *false green* that silently reopens the blind spot this
+gate closes. After editing the list, confirm the gate still fires by suppressing the relevant test
+class for one run.
+====
+
+[IMPORTANT]
+.Always measure with `clean`
+====
+The JaCoCo agent writes `jacoco.exec` with its default `append=true`, so a measurement taken
+without `clean` silently merges earlier runs and reports stale, inflated numbers. Every coverage
+measurement — and every negative control — must start from `clean`.
+====
 
 == See also
 
