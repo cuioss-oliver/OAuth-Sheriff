@@ -55,6 +55,12 @@ import java.util.concurrent.ConcurrentMap;
  * proactively-refreshed token that came back as a plain bearer — or bound to a different key — is
  * rejected as a downgrade rather than silently keeping the stale binding ({@code CLIENT-18}).
  * <p>
+ * <strong>Refresh is identity-bound as well as constraint-bound.</strong> Alongside that downgrade
+ * refusal, {@link #applyRefresh} carries the principal the refreshed access token names and
+ * {@link StoredToken#refreshed} refuses the refresh when a session already bound to a subject is handed
+ * a different one — so a refresh rotates credentials but never re-points a live session at another
+ * user. Both checks run inside the same atomic transform, so neither opens a check-then-act window.
+ * <p>
  * <strong>Logout is fail-closed with no stale-read window.</strong> {@link #revokeAndClear} performs a
  * single atomic take-and-clear via {@link TokenStore#remove(String)}: after it returns, the session's
  * tokens are already gone from the store, so any concurrent {@link #get} sees nothing and a stale
@@ -181,11 +187,11 @@ public class TokenLifecycleManager {
 
     /**
      * Applies refreshed token material to a stored session, carrying the ID token forward and
-     * verifying the refreshed token's sender-constraint against the stored one ({@code CLIENT-18}).
-     * Does nothing and returns empty when no bundle is held. When the stored bundle was
-     * sender-constrained but {@code refreshedBinding} no longer confirms the same key, the transform
-     * throws {@link IllegalStateException} (a rejected downgrade) rather than writing a mismatched
-     * bundle.
+     * verifying the refreshed token's sender-constraint and principal against the stored ones
+     * ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held. When the stored
+     * bundle was sender-constrained but {@code refreshedBinding} no longer confirms the same key, or
+     * when the stored bundle is bound to a subject that {@code refreshedSubject} does not match, the
+     * transform throws {@link IllegalStateException} rather than writing a mismatched bundle.
      *
      * @param sessionId        the opaque session identifier; must not be {@code null} or blank
      * @param newAccessToken   the refreshed access token; must not be {@code null} or blank
@@ -193,18 +199,21 @@ public class TokenLifecycleManager {
      * @param newExpiresAt     the refreshed access-token expiry, or {@code null} when unknown
      * @param refreshedBinding the {@code cnf} binding confirmed on the refreshed token, or {@code null}
      *                         when the refreshed token is a plain bearer token
+     * @param refreshedSubject the principal the refreshed access token names, or {@code null} when it
+     *                         carries no subject
      * @return the updated stored bundle, or {@link Optional#empty()} when no bundle was held
      */
     public Optional<StoredToken> applyRefresh(String sessionId, String newAccessToken,
             @Nullable String newRefreshToken, @Nullable Instant newExpiresAt,
-            @Nullable ConstraintBinding refreshedBinding) {
-        return applyRefresh(sessionId, newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding, null);
+            @Nullable ConstraintBinding refreshedBinding, @Nullable String refreshedSubject) {
+        return applyRefresh(sessionId, newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding,
+                refreshedSubject, null);
     }
 
     /**
      * Applies refreshed token material to a stored session, carrying the supplied refreshed ID token
-     * (OIDC Core §12.2) and verifying the refreshed token's sender-constraint against the stored one
-     * ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held.
+     * (OIDC Core §12.2) and verifying the refreshed token's sender-constraint and principal against the
+     * stored ones ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held.
      *
      * @param sessionId        the opaque session identifier; must not be {@code null} or blank
      * @param newAccessToken   the refreshed access token; must not be {@code null} or blank
@@ -212,19 +221,24 @@ public class TokenLifecycleManager {
      * @param newExpiresAt     the refreshed access-token expiry, or {@code null} when unknown
      * @param refreshedBinding the {@code cnf} binding confirmed on the refreshed token, or {@code null}
      *                         when the refreshed token is a plain bearer token
+     * @param refreshedSubject the principal the refreshed access token names, or {@code null} when it
+     *                         carries no subject
      * @param newIdToken       the refreshed, consistency-checked ID token, or {@code null} to keep the
      *                         current one when the AS omitted it on the refresh
      * @return the updated stored bundle, or {@link Optional#empty()} when no bundle was held
      */
     public Optional<StoredToken> applyRefresh(String sessionId, String newAccessToken,
             @Nullable String newRefreshToken, @Nullable Instant newExpiresAt,
-            @Nullable ConstraintBinding refreshedBinding, @Nullable String newIdToken) {
+            @Nullable ConstraintBinding refreshedBinding, @Nullable String refreshedSubject,
+            @Nullable String newIdToken) {
         // Atomic retrieve-transform-store: a concurrent revokeAndClear (logout) can no longer slip
         // between the read and the write and resurrect a just-revoked session, so a refresh applied
-        // after logout is a no-op rather than a stale-token write (CLIENT-22).
+        // after logout is a no-op rather than a stale-token write (CLIENT-22). The subject binding is
+        // checked inside the same transform for the same reason: comparing here, before the update,
+        // would reopen the check-then-act window the atomic update exists to close.
         return tokenStore.update(sessionId,
                 current -> current.refreshed(newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding,
-                        newIdToken));
+                        refreshedSubject, newIdToken));
     }
 
     /**
@@ -243,8 +257,11 @@ public class TokenLifecycleManager {
      * This coordinator refreshes plain-bearer sessions; it applies the refreshed material with no
      * {@code cnf} binding, so a sender-constrained stored bundle fails closed (a downgrade rather than
      * a silent bearer refresh) — sender-constrained refresh is applied through
-     * {@link #applyRefresh(String, String, String, Instant, ConstraintBinding, String)} with the
-     * confirmed binding.
+     * {@link #applyRefresh(String, String, String, Instant, ConstraintBinding, String, String)} with
+     * the confirmed binding.
+     * <p>
+     * The refreshed principal is read from the validated refreshed access token and handed to the
+     * transform, so a session already bound to a subject refuses a refresh naming a different one.
      *
      * @param sessionId               the opaque session identifier; must not be {@code null} or blank
      * @param metadata                the resolved provider metadata (token + revocation endpoints);
@@ -261,7 +278,8 @@ public class TokenLifecycleManager {
      * @throws de.cuioss.sheriff.token.commons.error.ClientProtocolException if refresh-token reuse is
      *                               detected (the family is revoked and the store cleared first)
      * @throws IllegalStateException if the refreshed ID token is inconsistent with the refreshed
-     *                               access token
+     *                               access token, or if the refreshed access token names a principal
+     *                               other than the one the session is bound to
      */
     public Optional<StoredToken> refresh(String sessionId, ProviderMetadata metadata,
             RefreshFlow refreshFlow, RevocationClient revocationClient,
@@ -326,8 +344,13 @@ public class TokenLifecycleManager {
                 ? Instant.now().plusSeconds(rotation.accessTokenExpiresInSeconds())
                 : null;
 
+        // The principal the refreshed access token names, handed to the transform so a session already
+        // bound to a subject refuses a refresh that names a different one. It is read from the same
+        // validated access token the §12.2 consistency check above uses.
+        String refreshedSubject = rotation.accessToken().getSubject().orElse(null);
+
         return applyRefresh(sessionId, rotation.accessToken().getRawToken(), rotation.refreshToken(),
-                refreshedExpiry, null, refreshedIdToken);
+                refreshedExpiry, null, refreshedSubject, refreshedIdToken);
     }
 
     private void revokeReusedFamily(String sessionId, ProviderMetadata metadata, String reusedToken,

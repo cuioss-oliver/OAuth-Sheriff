@@ -46,7 +46,7 @@ class StoredTokenTest {
     }
 
     private static StoredToken bearerToken(Instant expiresAt) {
-        return new StoredToken(token(), token(), token(), null, expiresAt);
+        return new StoredToken(token(), token(), token(), null, expiresAt, null);
     }
 
     @Nested
@@ -58,10 +58,10 @@ class StoredTokenTest {
         void shouldRejectBlankAccessToken() {
             assertAll("blank access tokens",
                     () -> assertThrows(IllegalArgumentException.class,
-                            () -> new StoredToken("", null, null, null, null),
+                            () -> new StoredToken("", null, null, null, null, null),
                             "an empty access token is not a usable credential"),
                     () -> assertThrows(IllegalArgumentException.class,
-                            () -> new StoredToken("   ", null, null, null, null),
+                            () -> new StoredToken("   ", null, null, null, null, null),
                             "a whitespace-only access token is not a usable credential"));
         }
 
@@ -72,7 +72,7 @@ class StoredTokenTest {
             // Objects.requireNonNull (NullPointerException) before the isBlank check that raises
             // IllegalArgumentException, so the two contracts need separate coverage.
             assertThrows(NullPointerException.class,
-                    () -> new StoredToken(null, null, null, null, null),
+                    () -> new StoredToken(null, null, null, null, null, null),
                     "a null access token is not a usable credential");
         }
     }
@@ -124,7 +124,7 @@ class StoredTokenTest {
             var stored = bearerToken(Instant.now());
             var newAccessToken = token();
 
-            var refreshed = stored.refreshed(newAccessToken, null, null, null);
+            var refreshed = stored.refreshed(newAccessToken, null, null, null, null);
 
             assertAll("carry-forward on an omitting refresh",
                     () -> assertEquals(newAccessToken, refreshed.accessToken(),
@@ -144,7 +144,7 @@ class StoredTokenTest {
             var newRefreshToken = token();
             var newIdToken = token();
 
-            var refreshed = stored.refreshed(token(), newRefreshToken, null, null, newIdToken);
+            var refreshed = stored.refreshed(token(), newRefreshToken, null, null, null, newIdToken);
 
             assertAll("adoption of returned material",
                     () -> assertEquals(newRefreshToken, refreshed.refreshToken(),
@@ -157,11 +157,11 @@ class StoredTokenTest {
         @DisplayName("Should refuse to refresh a sender-constrained bundle onto a plain bearer token (CLIENT-18)")
         void shouldRefuseDowngradeToBearer() {
             var binding = ConstraintBinding.dpop(token());
-            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now());
+            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now(), null);
             var newAccessToken = token();
 
             var exception = assertThrows(IllegalStateException.class,
-                    () -> constrained.refreshed(newAccessToken, null, null, null),
+                    () -> constrained.refreshed(newAccessToken, null, null, null, null),
                     "a sender-constrained bundle must not silently degrade to a bearer token");
 
             assertTrue(exception.getMessage().contains("cnf"),
@@ -173,11 +173,11 @@ class StoredTokenTest {
         void shouldRefuseRebindingToAnotherKey() {
             var binding = ConstraintBinding.dpop(token());
             var otherBinding = ConstraintBinding.dpop(token());
-            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now());
+            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now(), null);
             var newAccessToken = token();
 
             assertThrows(IllegalStateException.class,
-                    () -> constrained.refreshed(newAccessToken, null, null, otherBinding),
+                    () -> constrained.refreshed(newAccessToken, null, null, otherBinding, null),
                     "a re-binding to a different key must fail closed");
         }
 
@@ -185,9 +185,9 @@ class StoredTokenTest {
         @DisplayName("Should carry the sender constraint forward when the refreshed token confirms the same key")
         void shouldCarryConstraintForwardOnMatchingBinding() {
             var binding = ConstraintBinding.dpop(token());
-            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now());
+            var constrained = new StoredToken(token(), token(), token(), binding, Instant.now(), null);
 
-            var refreshed = constrained.refreshed(token(), null, null, binding);
+            var refreshed = constrained.refreshed(token(), null, null, binding, null);
 
             assertEquals(binding, refreshed.constraintBinding(),
                     "a refreshed token confirming the same key keeps the sender constraint");

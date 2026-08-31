@@ -130,7 +130,7 @@ class RotationReuseDetectionTest {
     }
 
     private static StoredToken bearerBundle(String refreshToken, String idToken) {
-        return new StoredToken(Generators.letterStrings(20, 40).next(), refreshToken, idToken, null, null);
+        return new StoredToken(Generators.letterStrings(20, 40).next(), refreshToken, idToken, null, null, null);
     }
 
     @Test

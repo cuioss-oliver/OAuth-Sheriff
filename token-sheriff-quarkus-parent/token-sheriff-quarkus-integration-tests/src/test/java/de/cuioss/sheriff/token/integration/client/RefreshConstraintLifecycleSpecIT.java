@@ -56,8 +56,8 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>{@link #shouldPreserveTheSenderConstraintThroughConfirmedBindingApplyRefresh()} drives the
  *       <em>documented</em> sender-constrained path: the caller has {@link RefreshFlow} perform the
  *       DPoP-constrained rotation, extracts the {@code cnf} binding the refreshed token actually
- *       carries, and applies it through the six-argument
- *       {@link TokenLifecycleManager#applyRefresh(String, String, String, Instant, ConstraintBinding, String)}
+ *       carries, and applies it through the seven-argument
+ *       {@link TokenLifecycleManager#applyRefresh(String, String, String, Instant, ConstraintBinding, String, String)}
  *       overload. The stored bundle keeps its binding and nothing throws.</li>
  *   <li>{@link #shouldRefuseCoordinatorRefreshThatAppliesNoConfirmedBinding()} drives the
  *       {@link TokenLifecycleManager#refresh} coordinator over the same kind of session. That
@@ -114,7 +114,7 @@ class RefreshConstraintLifecycleSpecIT extends BaseIntegrationTest {
         StoredToken refreshed = assertDoesNotThrow(() -> manager.applyRefresh(sessionId,
                         rotation.accessToken().getRawToken(), rotation.refreshToken(),
                         Instant.now().plusSeconds(rotation.accessTokenExpiresInSeconds()), confirmedBinding,
-                        rotation.idToken()),
+                        rotation.accessToken().getSubject().orElse(null), rotation.idToken()),
                 "applying the binding the refreshed token actually carries must not be read as a downgrade")
                 .orElseThrow(() -> new AssertionError("the session must still hold a bundle after applyRefresh"));
 
@@ -169,7 +169,7 @@ class RefreshConstraintLifecycleSpecIT extends BaseIntegrationTest {
 
         StoredToken stored = new StoredToken(acquired.accessToken(), acquired.refreshToken(),
                 acquired.idToken(), acquiredBinding,
-                Instant.now().plusSeconds(acquired.expiresInSeconds()));
+                Instant.now().plusSeconds(acquired.expiresInSeconds()), null);
         manager.store(sessionId, stored);
         return stored;
     }

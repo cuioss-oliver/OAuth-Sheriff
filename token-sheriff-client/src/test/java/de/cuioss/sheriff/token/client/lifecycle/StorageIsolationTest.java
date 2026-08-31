@@ -50,8 +50,8 @@ class StorageIsolationTest {
         var store = new InMemoryTokenStore();
         String sessionA = Generators.letterStrings(10, 20).next();
         String sessionB = Generators.letterStrings(21, 30).next();
-        StoredToken tokenA = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null);
-        StoredToken tokenB = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null);
+        StoredToken tokenA = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null, null);
+        StoredToken tokenB = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null, null);
 
         store.store(sessionA, tokenA);
         store.store(sessionB, tokenB);
@@ -73,7 +73,8 @@ class StorageIsolationTest {
         for (int i = 0; i < sessions; i++) {
             String sessionId = "session-" + i + "-" + Generators.letterStrings(5, 10).next();
             sessionIds.add(sessionId);
-            expected.put(sessionId, new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null));
+            expected.put(sessionId,
+                    new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null, null));
         }
 
         ExecutorService pool = Executors.newFixedThreadPool(16);

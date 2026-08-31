@@ -49,7 +49,7 @@ class TokenStoreTest {
 
     private static StoredToken bearerToken() {
         return new StoredToken(Generators.letterStrings(20, 40).next(), Generators.letterStrings(20, 40).next(),
-                null, null, null);
+                null, null, null, null);
     }
 
     @Test
@@ -109,8 +109,10 @@ class TokenStoreTest {
         store.store(presentSession, original);
         String rotatedAccess = Generators.letterStrings(20, 40).next();
 
-        var updated = store.update(presentSession, current -> current.refreshed(rotatedAccess, null, null, null));
-        var skipped = store.update(absentSession, current -> current.refreshed(rotatedAccess, null, null, null));
+        var updated = store.update(presentSession,
+                current -> current.refreshed(rotatedAccess, null, null, null, null));
+        var skipped = store.update(absentSession,
+                current -> current.refreshed(rotatedAccess, null, null, null, null));
 
         assertAll("atomic update",
                 () -> assertEquals(rotatedAccess, updated.orElseThrow().accessToken(),
@@ -132,7 +134,8 @@ class TokenStoreTest {
         manager.store(sessionId, bearerToken());
         manager.revokeAndClear(sessionId);
 
-        var refreshed = manager.applyRefresh(sessionId, Generators.letterStrings(20, 40).next(), null, null, null);
+        var refreshed = manager.applyRefresh(sessionId, Generators.letterStrings(20, 40).next(), null, null, null,
+                null);
 
         assertAll("refresh after logout is a no-op",
                 () -> assertTrue(refreshed.isEmpty(),
@@ -151,11 +154,11 @@ class TokenStoreTest {
         String expiringSession = Generators.letterStrings(10, 20).next();
         String unknownExpirySession = Generators.letterStrings(10, 20).next();
         manager.store(freshSession, new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null,
-                now.plusSeconds(300)));
+                now.plusSeconds(300), null));
         manager.store(expiringSession, new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null,
-                now.plusSeconds(10)));
+                now.plusSeconds(10), null));
         manager.store(unknownExpirySession, new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null,
-                null));
+                null, null));
 
         assertAll("refresh scheduling",
                 () -> assertFalse(manager.needsRefresh(freshSession, now), "a token far from expiry is not refreshed"),
@@ -192,7 +195,8 @@ class TokenStoreTest {
         // exercised deterministically without any wall-clock sleep.
         Instant expiresAt = Instant.now().plusSeconds(300);
         Instant windowOpensAt = expiresAt.minus(refreshLead);
-        StoredToken token = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, expiresAt);
+        StoredToken token = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, expiresAt,
+                null);
 
         assertAll("refresh-window edge (injected clock)",
                 () -> assertFalse(scheduler.needsRefresh(token, windowOpensAt.minusNanos(1)),
@@ -224,7 +228,7 @@ class TokenStoreTest {
 
                 Callable<Void> refreshTask = () -> {
                     barrier.await();
-                    manager.applyRefresh(sessionId, rotatedAccess, null, null, null);
+                    manager.applyRefresh(sessionId, rotatedAccess, null, null, null, null);
                     return null;
                 };
                 Callable<Void> logoutTask = () -> {
