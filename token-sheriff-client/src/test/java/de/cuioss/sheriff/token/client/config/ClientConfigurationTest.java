@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.SSLContext;
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -194,6 +195,30 @@ class ClientConfigurationTest {
                         "a zero ceiling would reject every discovery document"),
                 () -> assertThrows(IllegalArgumentException.class, negative::build,
                         "a negative ceiling is not a size"));
+    }
+
+    @Test
+    @DisplayName("Should default strict scope reconciliation to false so a broadened grant is reported, not refused")
+    void shouldDefaultStrictScopeReconciliationToFalse() {
+        var defaulted = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).build();
+
+        assertFalse(defaulted.isStrictScopeReconciliation(),
+                "the lenient posture is the default: refusing a broadened grant out of the box would turn an "
+                        + "authorization-server quirk into an authentication outage with no attacker in the loop");
+    }
+
+    @Test
+    @DisplayName("Should round-trip an explicitly enabled strict scope reconciliation")
+    void shouldRoundTripExplicitStrictScopeReconciliation() {
+        var strict = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .strictScopeReconciliation(true).build();
+
+        assertTrue(strict.isStrictScopeReconciliation(),
+                "a deployment that opts in to the strict posture must see the flag survive construction");
     }
 
     @Test
@@ -468,6 +493,25 @@ class ClientConfigurationTest {
 
             assertThrows(IllegalArgumentException.class, nullScope::build,
                     "a null scope would serialise as the literal \"null\" in the scope parameter");
+        }
+
+        @Test
+        @DisplayName("Should reject a scope entry holding more than one scope-token (RFC 6749 §3.3)")
+        void shouldRejectScopeEntryWithEmbeddedWhitespace() {
+            var multiTokenScope = builderWithIssuer(issuer()).scope("openid").scope("read write");
+
+            assertThrows(IllegalArgumentException.class, multiTokenScope::build,
+                    "'read write' goes out as two scope-tokens but counts as one requested member, so an "
+                            + "exactly-as-requested grant would reconcile as BROADENED");
+        }
+
+        @Test
+        @DisplayName("Should keep accepting a scope list whose entries are each a single scope-token")
+        void shouldAcceptSingleTokenScopeEntries() {
+            var config = builderWithIssuer(issuer()).scope("openid").scope("read").scope("write").build();
+
+            assertEquals(List.of("openid", "read", "write"), config.getScopes(),
+                    "single scope-token entries stay accepted unchanged");
         }
     }
 }

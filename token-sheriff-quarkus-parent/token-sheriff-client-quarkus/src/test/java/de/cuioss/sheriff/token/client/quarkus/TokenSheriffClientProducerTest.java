@@ -123,6 +123,34 @@ class TokenSheriffClientProducerTest {
                             "discoveryDocumentMaxSize defaults to the discovery-document ceiling"));
         }
 
+        // The strict-scope flag is a matched pair rather than one assertion folded into the two tests
+        // above: it changes runtime refusal behaviour, so both halves — that omitting the property
+        // leaves the lenient default in force, and that setting it actually reaches the engine — must
+        // fail independently if the mapping entry is dropped.
+
+        @Test
+        @DisplayName("Should leave strict scope reconciliation off when the property is absent")
+        void shouldDefaultStrictScopeReconciliationToLenient() {
+            ClientConfiguration configuration =
+                    new TokenSheriffClientProducer(configOf(minimalClientProperties())).clientConfiguration();
+
+            assertFalse(configuration.isStrictScopeReconciliation(),
+                    "omitting the property must yield the lenient default, never refuse a broadened grant");
+        }
+
+        @Test
+        @DisplayName("Should map strict scope reconciliation onto the engine configuration when enabled")
+        void shouldMapStrictScopeReconciliation() {
+            Map<String, String> properties = minimalClientProperties();
+            properties.put(ClientRuntimeConfig.STRICT_SCOPE_RECONCILIATION, "true");
+
+            ClientConfiguration configuration =
+                    new TokenSheriffClientProducer(configOf(properties)).clientConfiguration();
+
+            assertTrue(configuration.isStrictScopeReconciliation(),
+                    "sheriff.client.strict-scope-reconciliation=true must reach the engine configuration");
+        }
+
         @Test
         @DisplayName("Should fail loud when the client extension is present but not configured")
         void shouldFailWhenUnconfigured() {

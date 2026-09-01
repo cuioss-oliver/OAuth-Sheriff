@@ -85,7 +85,7 @@ class TokenResponseTest {
             String access = Generators.letterStrings(20, 40).next();
             String refresh = Generators.letterStrings(20, 40).next();
             String idToken = Generators.letterStrings(20, 40).next();
-            var stored = new StoredToken(access, refresh, idToken, null, null);
+            var stored = new StoredToken(access, refresh, idToken, null, null, null);
 
             String rendered = stored.toString();
 
@@ -97,15 +97,33 @@ class TokenResponseTest {
         }
 
         @Test
+        @DisplayName("Should render the bound subject masked rather than as the plain principal")
+        void shouldMaskBoundSubject() {
+            String subject = Generators.letterStrings(20, 40).next();
+            var stored = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null, subject);
+
+            String rendered = stored.toString();
+
+            assertAll("masked subject rendering",
+                    () -> assertFalse(rendered.contains(subject),
+                            "the bound principal must not appear unmasked in toString()"),
+                    () -> assertFalse(rendered.contains("subject=null"),
+                            "a present subject is rendered as a mask, not as absent"),
+                    () -> assertFalse(rendered.contains("subject=<redacted>"),
+                            "the subject is masked into a correlatable hash, not blanket-redacted"));
+        }
+
+        @Test
         @DisplayName("Should render absent StoredToken secrets as null rather than a redacted marker")
         void shouldRenderAbsentStoredTokenSecretsAsNull() {
-            var stored = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null);
+            var stored = new StoredToken(Generators.letterStrings(20, 40).next(), null, null, null, null, null);
 
             String rendered = stored.toString();
 
             assertAll("absent optional secrets",
                     () -> assertTrue(rendered.contains("refreshToken=null"), "an absent refresh token reads as null"),
                     () -> assertTrue(rendered.contains("idToken=null"), "an absent ID token reads as null"),
+                    () -> assertTrue(rendered.contains("subject=null"), "an absent bound subject reads as null"),
                     () -> assertTrue(rendered.contains("accessToken=<redacted>"),
                             "the mandatory access token is always redacted"));
         }
@@ -118,7 +136,8 @@ class TokenResponseTest {
             String rawAccess = holder.getRawToken();
             String refresh = Generators.letterStrings(20, 40).next();
             String idToken = Generators.letterStrings(20, 40).next();
-            var result = new RotationResult(access, refresh, idToken, 300L, true);
+            var result = new RotationResult(access, refresh, idToken, 300L, true,
+                    "openid profile", RotationResult.ScopeDelta.EQUAL);
 
             String rendered = result.toString();
 
@@ -139,7 +158,8 @@ class TokenResponseTest {
         void shouldRenderAbsentRotationIdTokenAsNull() {
             TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
             var result = new RotationResult(holder.asAccessTokenContent(),
-                    Generators.letterStrings(20, 40).next(), null, 0L, false);
+                    Generators.letterStrings(20, 40).next(), null, 0L, false,
+                    null, RotationResult.ScopeDelta.UNDECLARED);
 
             String rendered = result.toString();
 

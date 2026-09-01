@@ -213,12 +213,12 @@ class WiredFlowNegativePathIT extends WiredFlowTestSupport {
         String rt1 = Generators.letterStrings(20, 40).next();
         String rt2 = Generators.letterStrings(20, 40).next();
 
-        manager.store(session, new StoredToken(Generators.letterStrings(20, 40).next(), rt1, null, null, null));
+        manager.store(session, new StoredToken(Generators.letterStrings(20, 40).next(), rt1, null, null, null, null));
         getModuleDispatcher().success(accessHolder.getRawToken(), null, rt2, 300);
         manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth(config));
 
         // Replay the superseded token: roll the store back to rt1 while the family stays at rt2.
-        manager.store(session, new StoredToken(Generators.letterStrings(20, 40).next(), rt1, null, null, null));
+        manager.store(session, new StoredToken(Generators.letterStrings(20, 40).next(), rt1, null, null, null, null));
         getModuleDispatcher().success(accessHolder.getRawToken(), null, Generators.letterStrings(20, 40).next(), 300);
         var clientAuth = clientAuth(config);
 

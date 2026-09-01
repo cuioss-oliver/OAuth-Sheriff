@@ -148,7 +148,7 @@ class RefreshProductionPathSpecIT extends BaseIntegrationTest {
         assertNotNull(acquired.expiresInSeconds(), "Keycloak must report the access-token lifetime");
 
         StoredToken bundle = new StoredToken(acquired.accessToken(), acquired.refreshToken(),
-                acquired.idToken(), null, Instant.now().plusSeconds(acquired.expiresInSeconds()));
+                acquired.idToken(), null, Instant.now().plusSeconds(acquired.expiresInSeconds()), null);
         RefreshScheduler scheduler = new RefreshScheduler();
 
         assertFalse(scheduler.needsRefresh(bundle, Instant.now()),

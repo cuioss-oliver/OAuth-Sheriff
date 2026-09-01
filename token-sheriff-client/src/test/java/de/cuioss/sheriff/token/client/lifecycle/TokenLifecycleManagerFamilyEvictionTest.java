@@ -54,7 +54,7 @@ class TokenLifecycleManagerFamilyEvictionTest {
         for (int i = 0; i < cap + overflow; i++) {
             // Each stored bundle carries a refresh token, so store() seeds a rotation family per
             // session; distinct session ids therefore drive the map past its cap.
-            manager.store("session-" + i, new StoredToken("access-" + i, "refresh-" + i, null, null, null));
+            manager.store("session-" + i, new StoredToken("access-" + i, "refresh-" + i, null, null, null, null));
         }
 
         Map<String, RefreshTokenFamily> families = readFamilies(manager);

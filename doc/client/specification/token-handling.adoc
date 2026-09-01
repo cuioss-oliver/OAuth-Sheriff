@@ -59,8 +59,8 @@ Retrieved tokens are held *server-side* and never returned to the browser in usa
 |===
 | Stage | Rule
 
-| *Store* | Held server-side; the BFF binding shape (server-side store or encrypted cookie) is the application's choice (<<_bff_groundwork_non_preclusion>>). Storage is minimal and protected at rest.
-| *Refresh* | Access tokens are refreshed with `refresh_token`; *refresh-token rotation* is applied, and a detected reuse of a rotated token triggers *revocation of the token family* (xref:../threat-model.adoc#T-REFRESH-THEFT[T-REFRESH-THEFT]).
+| *Store* | Held server-side; the BFF binding shape (server-side store or encrypted cookie) is the application's choice (<<_bff_groundwork_non_preclusion>>). Storage is minimal and protected at rest. The stored bundle records the principal the session was established for (`StoredToken.subject`), which is what <<_refresh_identity_binding>> compares against.
+| *Refresh* | Access tokens are refreshed with `refresh_token`; *refresh-token rotation* is applied, and a detected reuse of a rotated token triggers *revocation of the token family* (xref:../threat-model.adoc#T-REFRESH-THEFT[T-REFRESH-THEFT]). The refresh additionally enforces the session-identity binding (<<_refresh_identity_binding>>) and reconciles the granted scope (<<_scope_reconciliation>>).
 | *Revoke* | Tokens are revoked through the engine's own `RevocationClient` back-channel call (RFC 7009, on the `cui-http` transport, `COMMONS-7`) on logout (xref:step-up-and-logout.adoc[step-up & logout]) and on detected refresh-token reuse (family revocation, xref:../threat-model.adoc#T-REFRESH-THEFT[T-REFRESH-THEFT]).
 | *Expiry* | Short-lived access tokens are preferred; refresh drives renewal.
 |===
@@ -81,7 +81,117 @@ server-side, and short-lived (short access-token TTLs, revoke-and-clear on logou
 which reclaimable material lives in the heap is kept small.
 ====
 
-== Preserving the sender-constraint
+== [[_refresh_identity_binding]] Refresh-path identity binding
+
+The authorization-code path binds the acquired identity to the session four ways — `state`,
+`nonce`, `at_hash` and `iss`. The refresh path historically carried *none* of them, so a refresh
+that returned a token for a different principal would silently re-point a live session
+(xref:../threat-model.adoc#T-REFRESH-IDENTITY[T-REFRESH-IDENTITY]). The refresh path now carries
+its own binding, closing that asymmetry:
+
+* `StoredToken.subject` records the principal the session was established for. It is `@Nullable`:
+  a session may legitimately be stored before the principal is known.
+* On every refresh the `sub` of the *newly validated* access token is compared against the bound
+  subject. The comparison is constant-time, matching the `SubBindingValidator` idiom used for the
+  userinfo `sub` binding.
+* A *mismatch refuses the refresh fail-closed*: the atomic store transform writes nothing, so a
+  refused refresh can never become a partial write.
+* When the authorization server had *already rotated* the refresh token before the refusal, refusing
+  is not enough — the presented token is burned at the server, so keeping it would leave the client
+  holding a dead credential that fails, or trips the server's own reuse detection, on the next
+  refresh. That case is therefore *quarantined*: the server-issued successor is revoked (RFC 7009),
+  and the store entry and rotation family are cleared, forcing re-authentication. The quarantine is
+  keyed on the *refusal itself, not on its reason*: a refused sender-constraint downgrade
+  (<<_sender_constraint_preservation>>) is quarantined on exactly the same terms as a `sub`
+  mismatch, because the presented token is equally burned either way. When the server returned no
+  new refresh token (RFC 6749 §6 permits omitting it), the presented token is still valid and the
+  untouched store entry stays usable.
+* When the bundle carries *no* subject yet, the check is skipped and the refreshed subject is
+  adopted — the binding takes effect from the first refresh that names a principal.
+* Where the authorization server also returns a refreshed ID token, it is validated through the
+  pipeline and cross-checked for `iss`/`sub` consistency against the refreshed access token before
+  it is carried forward. A refreshed ID token is *not* checked for `nonce`: OIDC Core §12.2 states
+  it SHOULD NOT carry one, and no fresh flow `nonce` exists to compare against.
+
+* Source: https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse[OIDC Core §12.2].
+
+== [[_scope_reconciliation]] Granted-scope reconciliation
+
+Every refresh reconciles the scope the authorization server actually granted against the scope
+this client requested, and reports the outcome on `RotationResult`
+(xref:../threat-model.adoc#T-SCOPE-DRIFT[T-SCOPE-DRIFT]):
+
+* `RotationResult.grantedScope` — the raw `scope` value the server returned, or `null` when it
+  omitted the parameter. `null` does *not* mean "no scope was granted": RFC 6749 §5.1 defines an
+  omitted `scope` as *identical to the requested scope*, so an absent value means "as requested".
+* `RotationResult.scopeDelta` — how the granted set relates to the requested set; never `null`.
+* `ClientConfiguration.strictScopeReconciliation` — opt-in, defaults to `false`.
+
+The full mode × outcome contract. This table mirrors the `RotationResult.ScopeDelta` enum in
+`token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/token/RotationResult.java`, whose
+Javadoc points back here. It is hand-authored rather than generated, because each row carries
+per-posture behavioural prose an enum-name dump could not reproduce — so a constant added, removed
+or renamed there must be reflected here in the same change.
+
+[cols="1,3,2,2", options="header"]
+|===
+| `scopeDelta` | Meaning | Default (lenient) | `strictScopeReconciliation=true`
+
+| `EQUAL`
+| The granted set is exactly the requested set.
+| Accepted silently.
+| Accepted silently.
+
+| `NARROWED`
+| The granted set is a strict subset — the server withheld at least one requested scope.
+| Accepted, `WARN`-logged, surfaced.
+| Accepted, `WARN`-logged, surfaced (*unchanged* by the flag).
+
+| `BROADENED`
+| The granted set contains at least one scope this client did not request.
+| Accepted, `WARN`-logged, surfaced.
+| *Refused* with `ClientProtocolException`; no `RotationResult` is produced.
+
+| `UNDECLARED`
+| No reconciliation was performed: either this client requested no scope at all, or the server
+  omitted the `scope` parameter (RFC 6749 §5.1 — "as requested").
+| Accepted silently.
+| Accepted silently.
+|===
+
+A granted set that both adds an unrequested scope *and* drops a requested one classifies as
+`BROADENED`: the unrequested member is the signal that matters, and folding the mixed case into
+the broader classification keeps the strict posture from silently accepting a grant it was
+enabled to refuse.
+
+[IMPORTANT]
+====
+*This is anomaly reporting, not compliance enforcement.* No published RFC obliges a client to
+reject a grant broader than the one it requested. RFC 6749 §3.3 affirmatively *permits* the
+authorization server to grant a scope other than the one requested, obliging it only to disclose
+the result, and the *resource server* remains the enforcement point for an over-broad claim. That
+is why the lenient, reporting posture is the default: refusing by default would convert a benign
+server quirk — several major authorization servers canonicalise or expand scope sets routinely —
+into a total authentication outage with no attacker in the loop. Enable the strict mode *only*
+against an authorization server known not to do so; the outage risk falls entirely on the
+deployment that opts in. Its only profile precedent is FAPI 1.0 Part 1 §5.2.3(10), an
+authorization-code-response rule that FAPI 2.0 dropped.
+====
+
+* Source: https://www.rfc-editor.org/rfc/rfc6749#section-3.3[RFC 6749 §3.3] (access-token scope), https://www.rfc-editor.org/rfc/rfc6749#section-5.1[RFC 6749 §5.1] (an omitted `scope` is the requested scope).
+
+[NOTE]
+====
+*Breaking record-shape change.* `RotationResult` gained the `grantedScope` and `scopeDelta`
+components, and `StoredToken` gained `subject`. Both are Java records, so a relying party that
+constructs either *directly* — rather than receiving one from `RefreshFlow` or
+`TokenLifecycleManager` — must supply the new components. `scopeDelta` is rejected as `null`;
+`grantedScope` and `subject` are nullable. The two new `RotationResult` components are
+authorization metadata rather than credentials, so unlike the token fields they are rendered in
+full by `toString()` — which is what makes a grant delta diagnosable from a log line.
+====
+
+== [[_sender_constraint_preservation]] Preserving the sender-constraint
 
 Where a retrieved token is sender-constrained — DPoP (`cnf.jkt`) or mTLS-bound — the engine
 keeps the binding intact across storage, refresh and any forwarding
@@ -91,6 +201,16 @@ associated with its proof-key / certificate binding, refresh preserves the const
 storage is kept minimal so a bound token is never copied more widely than the lifecycle
 requires. A sender-constrained token MUST NOT be degraded to a replayable bearer token by the
 way it is stored or forwarded.
+
+A refresh that would apply no confirmed `cnf` binding to a sender-constrained bundle is therefore
+*refused* by the same atomic store transform that enforces the subject binding — the refusal is
+independent of what the authorization server returned, since the client cannot preserve a
+constraint it was not handed. The refusal follows the same rotated-vs-not rule as the identity case
+(<<_refresh_identity_binding>>): when the authorization server had *already rotated* the refresh
+token before the refusal, the presented token is burned server-side, so the session is *quarantined*
+rather than preserved, forcing re-authentication. When the server did not rotate, the presented
+token is still valid and the untouched store entry stays usable. Sender-constrained refresh is
+applied through the `applyRefresh` overload that carries the confirmed binding.
 
 * Source: https://www.rfc-editor.org/rfc/rfc9449[RFC 9449], https://www.rfc-editor.org/rfc/rfc8705[RFC 8705].
 
@@ -131,7 +251,13 @@ claims, `sub` mismatches, and reused rotated refresh tokens
 (xref:../../commons/specification/transport.adoc#adversarial_dispatchers[commons transport
 spec], `COMMONS-7`); the client tests assert the validation pipeline rejects tampered tokens,
 the userinfo `sub` binding is enforced, rotation triggers family revocation on reuse, and the
-sender-constraint survives a refresh (xref:../requirements.adoc#CLIENT-22[CLIENT-22]). The full
+sender-constraint survives a refresh (xref:../requirements.adoc#CLIENT-22[CLIENT-22]). The two
+refresh-path controls above are covered by *matched positive/negative pairs*, so deleting either
+guard turns a test red rather than merely leaving one green: a substituted-`sub` refresh is
+refused and the session asserted quarantined while a matching-`sub` refresh is accepted and
+rotates the bundle; and the granted-scope matrix asserts each `scopeDelta` in *both* postures, including
+the `ClientProtocolException` the strict posture raises on a broadened grant. Both are
+additionally proven against a real authorization server in the integration suite. The full
 unit + integration coverage and the `CLIENT-N` → threat → test traceability are specified in
 xref:test-strategy.adoc[Test strategy].
 

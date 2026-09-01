@@ -1,0 +1,125 @@
+= ADR-0007: The refresh path binds identity against a retained session subject, not a re-parsed stored ID token
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: Session identity is bound by comparing the refreshed principal against a subject retained on the stored session record, checked inside the atomic store transform, rather than by re-parsing a stored ID token on every refresh
+// tags: oauth, refresh-token, session-lifecycle, identity-binding, client
+// affects: token-sheriff-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A client that refreshes an OAuth 2.0 token receives a refreshed access token naming a principal.
+Nothing in the refresh grant itself guarantees that principal matches the identity the session
+was originally established for; an authorization server that mismanages token issuance, or a
+client-side bug that mixes up sessions, could hand a refreshed credential belonging to one
+session's principal to a different session's caller. A client's refresh path therefore needs a
+way to re-confirm, on every refresh, that the principal coming back is the one the session was
+bound to — an identity-binding check the token's own ID-token consistency validation does not
+provide, because that check compares the refreshed ID token only against the refreshed access
+token from the same response, never against the session's original identity.
+
+Two structurally different sources exist for "the session's original identity" to compare
+against: a session may have been established with an ID token, whose subject the client could
+re-parse from the stored raw ID token bytes at comparison time, or the client could instead
+capture the subject once, at the point it is first known, and retain it on the stored session
+record for every subsequent comparison. A further structural constraint is that whatever
+comparison is chosen must run without a check-then-act gap: any window between reading the
+stored identity and writing the confirmed refresh result is a place a concurrent operation could
+invalidate the check between the read and the write.
+
+== Decision
+
+The stored session record retains an explicit subject field, captured once when the session is
+established or first bound, rather than re-derived by re-parsing a stored raw ID token on each
+refresh. The refresh path's identity-binding comparison runs inside the same atomic
+retrieve-transform-store operation that already applies the refresh result to the stored record
+— the single fail-closed transform seam that also enforces the session's binding-downgrade
+refusal — so the comparison and the write that would otherwise race against it happen as one
+indivisible step. A session stored with no known subject skips the comparison rather than failing
+closed unconditionally; a session with a retained subject that disagrees with the refreshed
+principal fails closed.
+
+== Consequences
+
+=== Positive
+
+* The identity comparison covers every session the client manages, including a session
+  established through a plain OAuth 2.0 grant with no ID token at all — a re-parsed-ID-token
+  approach could bind nothing for exactly that class of session.
+* Running the comparison inside the atomic store transform closes the check-then-act window a
+  comparison performed before the transform would leave open: a concurrent operation on the same
+  session cannot invalidate a decision already made and not yet written, because the decision and
+  the write are the same atomic step.
+* The retained subject is a single constant-time equality check per refresh, with no repeated
+  parsing of stored token material on the hot path.
+
+=== Negative
+
+* Adding the subject to the stored session record widens its shape, requiring every existing
+  construction site of that record — in production code and in tests — to be updated to the wider
+  form; there is no way to introduce the field without touching every caller that builds the
+  record directly.
+* A session established before its principal was known, or established through a grant type that
+  never yields one, carries no subject and permanently skips the check for that session's
+  lifetime; there is no retroactive way to bind identity to a session that was never given one.
+
+=== Risks
+
+* The `null`-subject skip is a deliberate, permanent exception to the fail-closed default for any
+  session stored without a known principal. A caller that assumes every session is identity-bound
+  is trusting an invariant this decision does not actually provide for that subset of sessions.
+* Because the record shape change removes the previous construction arity outright rather than
+  introducing it alongside a compatibility shim, any relying party that constructs the stored
+  session record directly, outside this codebase, breaks on upgrade with no transitional period.
+
+== Alternatives Considered
+
+*Compare the refreshed access token's subject against the subject parsed from the session's
+stored raw ID token, at comparison time, rather than retaining a subject field.* Rejected on two
+independent grounds. First, it binds nothing for a session established through a plain OAuth 2.0
+refresh grant with no ID token — exactly the class of session the retained-subject approach still
+covers, because the subject is captured once at binding time from whichever token carried it,
+independent of what is available later. Second, re-parsing the stored raw ID token on every
+refresh repeats work the client already did once when the session was established, for no benefit
+over reading a value captured at that time.
+
+*Perform the identity comparison outside the atomic store transform — for example, immediately
+before invoking it — rather than inside the transform passed to the atomic store update.*
+Rejected on concurrency grounds: a comparison performed before the atomic update, and only then
+followed by the write, leaves a check-then-act window in which a concurrent revoke-and-clear or
+store operation on the same session could invalidate the state the comparison examined between
+the read and the write. Running the comparison inside the transform itself, alongside the
+existing binding-downgrade refusal the same transform already enforces, makes the check and the
+write one atomic step instead of two racing ones.
+
+*Fail closed unconditionally, including for a session stored with no known subject, by treating
+an absent subject as itself a binding violation.* Considered and rejected as the default handling:
+a client that has legitimate sessions with no known subject — because they were never given one,
+not because anything is wrong — would have every refresh of such a session refused, which is a
+functional regression for a class of session the identity binding was never meant to police. The
+null-subject skip is the accepted alternative, at the cost of leaving that class of session
+unbound, documented as a residual risk rather than closed.
+
+Each rejected alternative either fails to cover the full population of sessions the retained-field
+approach covers, repeats work the retained-field approach does once, or introduces a race window
+the atomic-transform placement closes. The adopted decision is the one shape that covers every
+session class, does the comparison work exactly once per refresh, and runs it inside the same
+atomic step that already enforces the session's other fail-closed guard.
+
+== References
+
+* `token-sheriff-client` session storage and refresh path — the stored session record's retained
+  subject field, and the atomic store-transform seam that applies both the identity-binding check
+  and the existing binding-downgrade refusal
+* `doc/client/threat-model.adoc` — refresh-path threat model, session-identity binding control and
+  its residual unbound-session risk
+* `doc/client/specification/token-handling.adoc` — refresh-path specification, the retained-subject
+  contract

@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.token.client.token;
 
+import de.cuioss.sheriff.token.client.token.RotationResult.ScopeDelta;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
@@ -56,10 +57,10 @@ class RotationResultTest {
         AccessTokenContent accessToken = accessToken();
 
         var empty = assertThrows(IllegalArgumentException.class,
-                () -> new RotationResult(accessToken, "", null, 300L, false),
+                () -> new RotationResult(accessToken, "", null, 300L, false, null, ScopeDelta.UNDECLARED),
                 "an empty refresh token must be rejected");
         var whitespace = assertThrows(IllegalArgumentException.class,
-                () -> new RotationResult(accessToken, "   ", null, 300L, false),
+                () -> new RotationResult(accessToken, "   ", null, 300L, false, null, ScopeDelta.UNDECLARED),
                 "a whitespace-only refresh token must be rejected");
 
         assertAll("blank refresh token rejection",
@@ -70,17 +71,23 @@ class RotationResultTest {
     }
 
     @Test
-    @DisplayName("Should reject a null access token or a null refresh token")
+    @DisplayName("Should reject a null access token, a null refresh token or a null scope delta")
     void shouldRejectNullComponents() {
         AccessTokenContent accessToken = accessToken();
         String refreshToken = refreshToken();
 
+        var missingScopeDelta = assertThrows(NullPointerException.class,
+                () -> new RotationResult(accessToken, refreshToken, null, 300L, false, null, null),
+                "a rotation result without a scope reconciliation outcome must be rejected");
+
         assertAll("mandatory components",
                 () -> assertThrows(NullPointerException.class,
-                        () -> new RotationResult(null, refreshToken, null, 300L, false),
+                        () -> new RotationResult(null, refreshToken, null, 300L, false, null, ScopeDelta.UNDECLARED),
                         "a rotation result without a validated access token must be rejected"),
                 () -> assertThrows(NullPointerException.class,
-                        () -> new RotationResult(accessToken, null, null, 300L, false),
-                        "a rotation result without a refresh token must be rejected"));
+                        () -> new RotationResult(accessToken, null, null, 300L, false, null, ScopeDelta.UNDECLARED),
+                        "a rotation result without a refresh token must be rejected"),
+                () -> assertEquals("scopeDelta must not be null", missingScopeDelta.getMessage(),
+                        "the rejection must name the offending component"));
     }
 }

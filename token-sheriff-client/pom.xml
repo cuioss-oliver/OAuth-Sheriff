@@ -241,7 +241,7 @@
                      time this gate was written the bundle carried ~29 branches of slack above 0.80 while the
                      entire refresh path was ~29 covered branches, so a TOTAL refresh-path coverage wipeout
                      still landed above the bundle floor and passed. The blind spot is granularity, not
-                     threshold — hence a per-class rule scoped to the five refresh-path classes.
+                     threshold — hence a per-class rule scoped to the refresh-path classes listed below.
 
                      Why the include entries are dotted FQCNs: jacoco matches an element=CLASS rule against
                      JavaNames.getQualifiedClassName(vmName), i.e. the DOTTED name (nested classes render as
@@ -263,6 +263,9 @@
                                     <element>CLASS</element>
                                     <includes>
                                         <include>de.cuioss.sheriff.token.client.flow.RefreshFlow</include>
+                                        <include>de.cuioss.sheriff.token.client.flow.RefreshRedemption</include>
+                                        <include>de.cuioss.sheriff.token.client.flow.RedeemedScopeRefusalException</include>
+                                        <include>de.cuioss.sheriff.token.client.flow.RedeemedValidationRefusalException</include>
                                         <include>de.cuioss.sheriff.token.client.token.RotationResult</include>
                                         <include>de.cuioss.sheriff.token.client.token.RefreshTokenFamily</include>
                                         <include>de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler</include>

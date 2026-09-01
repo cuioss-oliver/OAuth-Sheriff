@@ -20,7 +20,9 @@ import de.cuioss.sheriff.token.client.config.ClientAuthMethod;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.token.RotationResult;
+import de.cuioss.sheriff.token.client.token.RotationResult.ScopeDelta;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
+import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimName;
@@ -31,6 +33,8 @@ import de.cuioss.sheriff.token.validation.test.dispatcher.TokenDispatcher;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import de.cuioss.test.mockwebserver.EnableMockWebServer;
 import de.cuioss.test.mockwebserver.URIBuilder;
@@ -40,6 +44,10 @@ import mockwebserver3.RecordedRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -54,6 +62,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnableMockWebServer
 @DisplayName("RefreshFlow refresh_token exchange with rotation")
 class RefreshFlowTest {
+
+    /** The scope set this client requests throughout the reconciliation matrix. */
+    private static final List<String> REQUESTED_SCOPES = List.of("openid", "profile");
+
+    /** The rendering of {@link #REQUESTED_SCOPES} the reconciliation WARN records interpolate. */
+    private static final String REQUESTED_RENDERED = "openid profile";
 
     @Getter
     private final TokenDispatcher moduleDispatcher = new TokenDispatcher();
@@ -243,5 +257,139 @@ class RefreshFlowTest {
                         "a blank refresh token is no rotation — the presented token stays in use"),
                 () -> assertFalse(result.rotated(),
                         "a blank refresh token must not be reported as a rotation"));
+    }
+
+    // --- Scope reconciliation matrix (RFC 6749 §3.3 / §5.1) -------------------------------------
+    //
+    // The reconciliation is anomaly reporting, not compliance enforcement: RFC 6749 §3.3 permits the
+    // authorization server to grant a scope other than the one requested provided it discloses the
+    // result, so the lenient default accepts every outcome and only reports it. The matrix therefore
+    // pins mode x outcome rather than a single matched pair: the strict posture is exercised as its
+    // own negative control, and the three outcomes that behave identically in both postures are
+    // parameterized over the mode so the both-modes obligation stays explicit.
+
+    /**
+     * A client requesting {@link #REQUESTED_SCOPES}, in the supplied reconciliation posture.
+     *
+     * @param strictScopeReconciliation whether a broadened grant is refused rather than reported
+     */
+    private static ClientConfiguration scopedConfig(boolean strictScopeReconciliation) {
+        return ClientConfiguration.builder()
+                .issuer("https://" + Generators.letterStrings(3, 10).next() + ".example.com")
+                .clientId(Generators.letterStrings(5, 12).next())
+                .clientSecret(Generators.letterStrings(8, 20).next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .allowInsecureHttp(true)
+                .scopes(REQUESTED_SCOPES)
+                .strictScopeReconciliation(strictScopeReconciliation)
+                .build();
+    }
+
+    /**
+     * An RFC 6749 §5.1 success body carrying the supplied granted {@code scope}. Composed here rather
+     * than through {@link TokenDispatcher#tokenResponse} because that shared builder carries no
+     * {@code scope} member. A {@code null} {@code grantedScope} omits the parameter entirely, which
+     * §5.1 defines as identical to the requested scope.
+     *
+     * @param grantedScope the {@code scope} value to return, or {@code null} to omit the parameter
+     */
+    private String scopedTokenResponse(String grantedScope) {
+        StringBuilder json = new StringBuilder("{\"access_token\":\"").append(holder.getRawToken())
+                .append("\",\"token_type\":\"Bearer\",\"expires_in\":300,\"refresh_token\":\"")
+                .append(Generators.letterStrings(20, 40).next()).append('"');
+        if (grantedScope != null) {
+            json.append(",\"scope\":\"").append(grantedScope).append('"');
+        }
+        return json.append('}').toString();
+    }
+
+    @Test
+    @DisplayName("Should accept and report a broadened grant in the default lenient mode")
+    void shouldAcceptAndReportBroadenedGrantWhenLenient(URIBuilder uriBuilder) {
+        String granted = "openid profile email";
+        moduleDispatcher.respondWith(scopedTokenResponse(granted));
+
+        RotationResult result = flow(scopedConfig(false))
+                .refresh(metadata(uriBuilder), Generators.letterStrings(20, 40).next());
+
+        assertAll("broadened grant, lenient",
+                () -> assertNotNull(result.accessToken(), "a broadened grant must still be accepted"),
+                () -> assertEquals(ScopeDelta.BROADENED, result.scopeDelta(),
+                        "an unrequested scope must be classified BROADENED"),
+                () -> assertEquals(granted, result.grantedScope(),
+                        "the raw server-granted scope must be surfaced for the caller to act on"));
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                "granted a broader scope than requested on refresh; granted '" + granted
+                        + "', requested '" + REQUESTED_RENDERED + "'");
+    }
+
+    @Test
+    @DisplayName("Should refuse a broadened grant with ClientProtocolException under strict reconciliation")
+    void shouldRefuseBroadenedGrantWhenStrict(URIBuilder uriBuilder) {
+        String granted = "openid profile email";
+        moduleDispatcher.respondWith(scopedTokenResponse(granted));
+        var flow = flow(scopedConfig(true));
+        var metadata = metadata(uriBuilder);
+        String presented = Generators.letterStrings(20, 40).next();
+
+        var exception = assertThrows(ClientProtocolException.class, () -> flow.refresh(metadata, presented),
+                "strict reconciliation must refuse a broadened grant");
+
+        assertAll("refusal reason",
+                () -> assertTrue(exception.getMessage()
+                                .contains("granted a broader scope than requested on refresh; granted '" + granted
+                                        + "', requested '" + REQUESTED_RENDERED + "'"),
+                        "the refusal must name the granted and requested scopes, not merely fail"),
+                () -> assertTrue(exception.getMessage().contains("strictScopeReconciliation is enabled"),
+                        "the refusal must name the opt-in flag that caused it"));
+    }
+
+    @ParameterizedTest(name = "strictScopeReconciliation={0}")
+    @ValueSource(booleans = {false, true})
+    @DisplayName("Should accept an equal grant silently in both reconciliation modes")
+    void shouldAcceptEqualGrantSilently(boolean strict, URIBuilder uriBuilder) {
+        moduleDispatcher.respondWith(scopedTokenResponse(REQUESTED_RENDERED));
+
+        RotationResult result = flow(scopedConfig(strict))
+                .refresh(metadata(uriBuilder), Generators.letterStrings(20, 40).next());
+
+        assertEquals(ScopeDelta.EQUAL, result.scopeDelta(),
+                "a grant matching the request must be classified EQUAL");
+        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, RefreshFlow.class);
+    }
+
+    @ParameterizedTest(name = "strictScopeReconciliation={0}")
+    @ValueSource(booleans = {false, true})
+    @DisplayName("Should accept and report a narrowed grant in both reconciliation modes")
+    void shouldAcceptAndReportNarrowedGrant(boolean strict, URIBuilder uriBuilder) {
+        String granted = "openid";
+        moduleDispatcher.respondWith(scopedTokenResponse(granted));
+
+        RotationResult result = flow(scopedConfig(strict))
+                .refresh(metadata(uriBuilder), Generators.letterStrings(20, 40).next());
+
+        assertAll("narrowed grant",
+                () -> assertEquals(ScopeDelta.NARROWED, result.scopeDelta(),
+                        "a withheld requested scope must be classified NARROWED"),
+                () -> assertEquals(granted, result.grantedScope(), "the narrowed grant must be surfaced"));
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                "granted a narrower scope than requested on refresh; granted '" + granted
+                        + "', requested '" + REQUESTED_RENDERED + "'");
+    }
+
+    @ParameterizedTest(name = "strictScopeReconciliation={0}")
+    @ValueSource(booleans = {false, true})
+    @DisplayName("Should accept an absent scope parameter silently in both reconciliation modes")
+    void shouldAcceptAbsentScopeSilently(boolean strict, URIBuilder uriBuilder) {
+        moduleDispatcher.respondWith(scopedTokenResponse(null));
+
+        RotationResult result = flow(scopedConfig(strict))
+                .refresh(metadata(uriBuilder), Generators.letterStrings(20, 40).next());
+
+        assertAll("absent scope",
+                () -> assertEquals(ScopeDelta.UNDECLARED, result.scopeDelta(),
+                        "an omitted scope is 'as requested' (RFC 6749 §5.1), never a broadening signal"),
+                () -> assertNull(result.grantedScope(), "an omitted scope must be surfaced as null"));
+        LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, RefreshFlow.class);
     }
 }

@@ -135,6 +135,52 @@ public final class ClientLogMessages {
                 .identifier(109)
                 .template("Refreshed ID token is inconsistent with the refreshed access token (OIDC Core §12.2 'iss'/'sub'); refusing to apply the refresh")
                 .build();
+
+        /**
+         * The authorization server granted a narrower scope than this client requested. Reported, not
+         * refused — RFC 6749 §3.3 permits the server to withhold requested scopes provided it
+         * discloses the result.
+         */
+        public static final LogRecord SCOPE_NARROWED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(110)
+                .template("Authorization server granted a narrower scope than requested on refresh; granted '%s', requested '%s'")
+                .build();
+
+        /**
+         * The authorization server granted a scope this client did not request. Reported by default,
+         * and refused only when the client opted in via
+         * {@code ClientConfiguration.strictScopeReconciliation}. This is an anomaly report for the
+         * operator and the calling application, not a violation notice.
+         */
+        public static final LogRecord SCOPE_BROADENED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(111)
+                .template("Authorization server granted a broader scope than requested on refresh; granted '%s', requested '%s'")
+                .build();
+
+        /**
+         * A refresh the authorization server had already rotated was refused by the identity or
+         * sender-constraint binding check; the session is quarantined fail-closed because the presented
+         * token is burned at the AS and the rotated one must not be kept.
+         */
+        public static final LogRecord REFRESH_IDENTITY_REJECTED_QUARANTINE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(112)
+                .template("Refresh refused after the authorization server rotated the token for session '%s'; revoking the rotated token at the authorization server (RFC 7009) and clearing the store and rotation family")
+                .build();
+
+        /**
+         * The authorization server accepted the refresh request but its response could not be parsed,
+         * so whether it rotated the presented refresh token is unrecoverable. The session is
+         * quarantined fail-closed on the presumption that the presented token is burned; no
+         * revocation is attempted because no successor token is known.
+         */
+        public static final LogRecord REFRESH_REDEMPTION_UNVERIFIABLE_QUARANTINE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(113)
+                .template("Refresh response for session '%s' was unusable after the authorization server accepted the request; rotation is unrecoverable, so the presented token is presumed burned and the store and rotation family are cleared without revocation")
+                .build();
     }
 
     /**

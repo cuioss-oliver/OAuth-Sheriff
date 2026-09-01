@@ -76,7 +76,10 @@ public final class ClientConfigMapper {
                 .clientId(clientId)
                 .authMethod(resolveAuthMethod(config))
                 .allowInsecureHttp(config.getOptionalValue(ClientRuntimeConfig.ALLOW_INSECURE_HTTP, Boolean.class)
-                        .orElse(Boolean.FALSE));
+                        .orElse(Boolean.FALSE))
+                .strictScopeReconciliation(
+                        config.getOptionalValue(ClientRuntimeConfig.STRICT_SCOPE_RECONCILIATION, Boolean.class)
+                                .orElse(Boolean.FALSE));
 
         config.getOptionalValue(ClientRuntimeConfig.DISCOVERY_DOCUMENT_MAX_SIZE, Integer.class)
                 .ifPresent(builder::discoveryDocumentMaxSize);

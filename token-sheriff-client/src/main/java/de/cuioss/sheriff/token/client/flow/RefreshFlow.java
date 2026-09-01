@@ -19,16 +19,26 @@ import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
+import de.cuioss.sheriff.token.client.internal.ClientLogMessages;
+import de.cuioss.sheriff.token.client.internal.LogSanitizer;
 import de.cuioss.sheriff.token.client.token.RotationResult;
+import de.cuioss.sheriff.token.client.token.RotationResult.ScopeDelta;
 import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
+import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * Drives the OAuth 2.0 {@code refresh_token} grant (RFC 6749 §6) with refresh-token rotation.
@@ -43,6 +53,29 @@ import java.util.Objects;
  * BCP), the {@link RotationResult} reports the rotated token and flags the rotation; the caller
  * feeds that transition into its {@link de.cuioss.sheriff.token.client.token.RefreshTokenFamily} so
  * a later replay of a superseded token is detected and the family revoked ({@code CLIENT-17}).
+ * <p>
+ * The flow also reconciles the scope the authorization server granted against the scope this client
+ * requested, and reports the outcome on the {@link RotationResult}
+ * ({@link RotationResult.ScopeDelta}). This is <strong>anomaly reporting, not compliance
+ * enforcement</strong>: RFC 6749 §3.3 permits the server to grant a scope other than the one
+ * requested provided it discloses the result, and the resource server remains the enforcement point
+ * for an over-broad claim. A broadened grant is therefore accepted and {@code WARN}-logged by
+ * default; it is refused with {@link ClientProtocolException} only when the deployment opts in via
+ * {@code ClientConfiguration.strictScopeReconciliation}.
+ * <p>
+ * Both the validation refusal and the strict-posture scope refusal are raised <em>after</em> the token
+ * endpoint has answered, and therefore after the authorization server has redeemed and possibly
+ * rotated the presented refresh token — as is an unparseable success response, where rotation cannot
+ * be determined at all. A caller holding a session cannot tell from the exception type alone whether
+ * the token it still has stored is alive or dead, so each of those refusals <em>carries</em> the
+ * {@link RefreshRedemption} it was raised under ({@link RedeemedRefreshFailure}), and
+ * {@link #redemptionOf(Throwable)} reads it back. A failure raised before that point carries none,
+ * which is what keeps a transient network fault from being mistaken for a burned credential.
+ * <p>
+ * The signal rides on the exception rather than on a separate observer argument deliberately:
+ * {@link #refresh(ProviderMetadata, String)} stays the one overridable entry point on this
+ * subclassable type, so a subclass that intercepts, instruments or stubs a refresh stays on the
+ * production path instead of silently becoming dead code.
  *
  * @since 1.0
  * @author Oliver Wolff
@@ -57,6 +90,12 @@ public class RefreshFlow {
     private static final String GRANT_REFRESH_TOKEN = "refresh_token";
     private static final String PARAM_REFRESH_TOKEN = "refresh_token";
     private static final String PARAM_SCOPE = "scope";
+
+    /** The {@code scope} response parameter is a space-delimited list (RFC 6749 §3.3). */
+    private static final String SCOPE_DELIMITER = " ";
+
+    /** Splits a granted {@code scope} value on any run of whitespace. */
+    private static final String SCOPE_SPLIT_PATTERN = "\\s+";
 
     private final ClientConfiguration configuration;
     private final TokenEndpointClient tokenEndpointClient;
@@ -107,17 +146,22 @@ public class RefreshFlow {
     }
 
     /**
-     * Exchanges a refresh token for a freshly validated access token, reporting any rotation.
+     * Exchanges a refresh token for a freshly validated access token, reporting any rotation and any
+     * granted-scope delta.
      *
      * @param metadata     the resolved provider metadata carrying the token endpoint; must not be
      *                     {@code null}
      * @param refreshToken the refresh token to redeem; must not be {@code null} or blank
      * @return the rotation result carrying the validated access token, the refresh token to use
-     *         next, and the raw refreshed ID token (when the AS issued one) for the lifecycle
-     *         consistency check (OIDC Core §12.2)
+     *         next, the raw refreshed ID token (when the AS issued one) for the lifecycle
+     *         consistency check (OIDC Core §12.2), and the granted scope with its reconciliation
+     *         outcome
      * @throws de.cuioss.sheriff.token.commons.error.TransportException if the token request fails
      * @throws de.cuioss.sheriff.token.validation.exception.TokenValidationException if the returned
      *         token fails validation
+     * @throws ClientProtocolException if the granted scope is broader than the requested scope and
+     *         {@code ClientConfiguration.strictScopeReconciliation} is enabled; never in the default
+     *         lenient posture — thrown as the {@link RedeemedScopeRefusalException} subtype
      */
     public RotationResult refresh(ProviderMetadata metadata, String refreshToken) {
         Objects.requireNonNull(metadata, "metadata must not be null");
@@ -132,22 +176,146 @@ public class RefreshFlow {
                 PARAM_GRANT_TYPE, GRANT_REFRESH_TOKEN,
                 PARAM_REFRESH_TOKEN, refreshToken));
         if (!configuration.getScopes().isEmpty()) {
-            form.put(PARAM_SCOPE, String.join(" ", configuration.getScopes()));
+            form.put(PARAM_SCOPE, String.join(SCOPE_DELIMITER, configuration.getScopes()));
         }
 
         Map<String, String> headers = new HashMap<>();
         clientAuthentication.decorate(form, headers);
 
+        // A failure raised here that is NOT a RedeemedResponseException happened BEFORE the server
+        // processed the request (connection failure, DNS failure, SSRF-blocked target, non-2xx), so it
+        // carries no redemption state and the presented token is left in use. It is deliberately not
+        // caught: redemptionOf classifies it as pre-redemption by its type alone.
         TokenResponse tokenResponse = tokenEndpointClient.requestToken(tokenEndpoint, form, headers,
                 senderConstraint);
-        AccessTokenContent accessToken = validationBridge.validateAccessToken(tokenResponse.accessToken);
 
+        // Rotation is resolved BEFORE the client-side checks below, because each of them can refuse the
+        // exchange after the server has already burned the presented token — and each therefore throws
+        // a RedeemedRefreshFailure carrying this state.
         String rotatedRefreshToken = resolveRefreshToken(refreshToken, tokenResponse.refreshToken);
         boolean rotated = !rotatedRefreshToken.equals(refreshToken);
+        RefreshRedemption redemption = rotated
+                ? RefreshRedemption.rotated(rotatedRefreshToken)
+                : RefreshRedemption.notRotated();
+
+        AccessTokenContent accessToken;
+        try {
+            accessToken = validationBridge.validateAccessToken(tokenResponse.accessToken);
+        } catch (TokenValidationException refused) {
+            throw new RedeemedValidationRefusalException(refused, redemption);
+        }
         LOGGER.debug("Refreshed access token for client '%s' (rotated=%s)", configuration.getClientId(), rotated);
 
+        String grantedScope = tokenResponse.getScope().orElse(null);
+        ScopeDelta scopeDelta = classifyScopeDelta(grantedScope);
+        reportScopeDelta(scopeDelta, grantedScope, redemption);
+
         return new RotationResult(accessToken, rotatedRefreshToken, tokenResponse.idToken,
-                tokenResponse.expiresIn, rotated);
+                tokenResponse.expiresIn, rotated, grantedScope, scopeDelta);
+    }
+
+    /**
+     * Classifies a failure raised by {@link #refresh(ProviderMetadata, String)} as having happened
+     * after the authorization server redeemed the presented refresh token, or before it.
+     * <p>
+     * This is the single place the pre-/post-redemption distinction is decided, and callers must use it
+     * rather than enumerate exception types: it folds in the one redeemed case that predates this
+     * mechanism and carries no state of its own — {@link RedeemedResponseException}, a {@code 2xx}
+     * whose body could not be parsed, where no {@link de.cuioss.sheriff.token.client.token.TokenResponse}
+     * is ever constructed and rotation is therefore not computable even in principle. That case maps to
+     * {@link RefreshRedemption#rotationUnknown()} and fails closed on a presumed rotation with no
+     * successor to revoke.
+     * <p>
+     * An empty result means the request never reached redemption, so the presented refresh token is
+     * untouched and still valid. Treating that as a redemption would destroy a working session over a
+     * transient network fault.
+     *
+     * @param failure the failure {@code refresh} raised; must not be {@code null}
+     * @return the redemption state, or {@link Optional#empty()} when the failure predates redemption
+     */
+    public static Optional<RefreshRedemption> redemptionOf(Throwable failure) {
+        Objects.requireNonNull(failure, "failure must not be null");
+        if (failure instanceof RedeemedRefreshFailure redeemed) {
+            return Optional.of(redeemed.redemption());
+        }
+        if (failure instanceof RedeemedResponseException) {
+            return Optional.of(RefreshRedemption.rotationUnknown());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Classifies the scope the authorization server granted against the scope this client requested.
+     * <p>
+     * A pure query — it neither logs nor throws; {@link #reportScopeDelta(ScopeDelta, String)} owns
+     * those effects. Reconciliation is skipped (yielding {@link ScopeDelta#UNDECLARED}) when this
+     * client requested no scope, since there is then no baseline to compare against, and when the AS
+     * omitted the {@code scope} parameter, which RFC 6749 §5.1 defines as identical to the requested
+     * scope.
+     * <p>
+     * A granted set that both adds an unrequested scope and drops a requested one is classified
+     * {@link ScopeDelta#BROADENED}: the unrequested member is the signal that matters, and folding the
+     * mixed case into the broader classification keeps the opt-in strict posture from silently
+     * accepting a grant it was enabled to refuse.
+     *
+     * @param grantedScope the raw granted {@code scope} value, or {@code null} when the AS omitted it
+     * @return the reconciliation outcome; never {@code null}
+     */
+    private ScopeDelta classifyScopeDelta(@Nullable String grantedScope) {
+        List<String> requestedScopes = configuration.getScopes();
+        if (requestedScopes.isEmpty() || grantedScope == null || grantedScope.isBlank()) {
+            return ScopeDelta.UNDECLARED;
+        }
+        Set<String> granted = new HashSet<>(Arrays.asList(grantedScope.trim().split(SCOPE_SPLIT_PATTERN)));
+        Set<String> requested = new HashSet<>(requestedScopes);
+        if (granted.equals(requested)) {
+            return ScopeDelta.EQUAL;
+        }
+        if (requested.containsAll(granted)) {
+            return ScopeDelta.NARROWED;
+        }
+        return ScopeDelta.BROADENED;
+    }
+
+    /**
+     * Applies the configured disposition for a reconciliation outcome.
+     * <p>
+     * A broadened grant is refused with {@link ClientProtocolException} only under the opt-in strict
+     * posture ({@code ClientConfiguration.strictScopeReconciliation}); by default it is accepted and
+     * reported at {@code WARN} so the delta is observable rather than invisible. A narrowed grant is
+     * accepted and reported in both postures. {@link ScopeDelta#EQUAL} and
+     * {@link ScopeDelta#UNDECLARED} are accepted silently.
+     * <p>
+     * The granted value crossed a trust boundary, so it is sanitized before interpolation into the log
+     * template and the exception message (CWE-117 log forging).
+     *
+     * @param scopeDelta   the reconciliation outcome
+     * @param grantedScope the raw granted {@code scope} value, or {@code null} when the AS omitted it
+     * @param redemption   what the authorization server did to the presented refresh token, carried on
+     *                     the refusal so the caller can fail the session closed
+     * @throws RedeemedScopeRefusalException when the grant is broadened and strict reconciliation is
+     *         enabled — a {@link ClientProtocolException} subtype, so the documented contract is
+     *         unchanged
+     */
+    private void reportScopeDelta(ScopeDelta scopeDelta, @Nullable String grantedScope,
+            RefreshRedemption redemption) {
+        if (scopeDelta == ScopeDelta.EQUAL || scopeDelta == ScopeDelta.UNDECLARED) {
+            return;
+        }
+        String safeGranted = LogSanitizer.sanitize(grantedScope);
+        String requested = String.join(SCOPE_DELIMITER, configuration.getScopes());
+        if (scopeDelta == ScopeDelta.NARROWED) {
+            LOGGER.warn(ClientLogMessages.WARN.SCOPE_NARROWED, safeGranted, requested);
+            return;
+        }
+        if (configuration.isStrictScopeReconciliation()) {
+            throw new RedeemedScopeRefusalException(
+                    "Authorization server granted a broader scope than requested on refresh; granted '"
+                            + safeGranted + "', requested '" + requested
+                            + "'. Refused because strictScopeReconciliation is enabled.",
+                    redemption);
+        }
+        LOGGER.warn(ClientLogMessages.WARN.SCOPE_BROADENED, safeGranted, requested);
     }
 
     /**

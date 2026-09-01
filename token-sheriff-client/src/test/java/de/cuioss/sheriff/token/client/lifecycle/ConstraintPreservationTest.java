@@ -47,7 +47,8 @@ class ConstraintPreservationTest {
         String sessionId = Generators.letterStrings(10, 20).next();
         ConstraintBinding binding = ConstraintBinding.dpop(Generators.letterStrings(30, 43).next());
         StoredToken token = new StoredToken(Generators.letterStrings(20, 40).next(),
-                Generators.letterStrings(20, 40).next(), Generators.letterStrings(20, 40).next(), binding, null);
+                Generators.letterStrings(20, 40).next(), Generators.letterStrings(20, 40).next(), binding, null,
+                null);
 
         store.store(sessionId, token);
         StoredToken read = store.retrieve(sessionId).orElseThrow();
@@ -63,13 +64,13 @@ class ConstraintPreservationTest {
         ConstraintBinding binding = ConstraintBinding.mtls(Generators.letterStrings(30, 43).next());
         String idToken = Generators.letterStrings(20, 40).next();
         manager.store(sessionId, new StoredToken(Generators.letterStrings(20, 40).next(),
-                Generators.letterStrings(20, 40).next(), idToken, binding, Instant.now().plusSeconds(60)));
+                Generators.letterStrings(20, 40).next(), idToken, binding, Instant.now().plusSeconds(60), null));
 
         String refreshedAccess = Generators.letterStrings(20, 40).next();
         String refreshedRefresh = Generators.letterStrings(20, 40).next();
         Instant refreshedExpiry = Instant.now().plusSeconds(300);
         StoredToken refreshed = manager.applyRefresh(sessionId, refreshedAccess, refreshedRefresh, refreshedExpiry,
-                binding)
+                binding, null)
                 .orElseThrow();
 
         assertAll("refresh preserves constraint",
@@ -88,9 +89,9 @@ class ConstraintPreservationTest {
         String currentRefresh = Generators.letterStrings(20, 40).next();
         ConstraintBinding binding = ConstraintBinding.dpop(Generators.letterStrings(30, 43).next());
         StoredToken token = new StoredToken(Generators.letterStrings(20, 40).next(), currentRefresh, null, binding,
-                null);
+                null, null);
 
-        StoredToken refreshed = token.refreshed(Generators.letterStrings(20, 40).next(), null, null, binding);
+        StoredToken refreshed = token.refreshed(Generators.letterStrings(20, 40).next(), null, null, binding, null);
 
         assertAll("non-rotating refresh",
                 () -> assertEquals(currentRefresh, refreshed.refreshToken(),

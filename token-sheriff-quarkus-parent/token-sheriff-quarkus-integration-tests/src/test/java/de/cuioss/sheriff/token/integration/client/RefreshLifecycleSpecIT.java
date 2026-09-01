@@ -183,7 +183,7 @@ class RefreshLifecycleSpecIT extends BaseIntegrationTest {
         assertNotNull(acquired.refreshToken(), "the fast-expiry client must issue a refresh token");
         assertNotNull(acquired.expiresInSeconds(), "Keycloak must report the access-token lifetime");
         return new StoredToken(acquired.accessToken(), acquired.refreshToken(), acquired.idToken(),
-                null, Instant.now().plusSeconds(acquired.expiresInSeconds()));
+                null, Instant.now().plusSeconds(acquired.expiresInSeconds()), null);
     }
 
     private Optional<StoredToken> refreshSession(String sessionId) {

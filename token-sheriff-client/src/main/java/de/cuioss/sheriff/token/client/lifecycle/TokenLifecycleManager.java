@@ -19,11 +19,13 @@ import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.ConstraintBinding;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
 import de.cuioss.sheriff.token.client.internal.ClientLogMessages;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RefreshTokenFamily;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.tools.logging.CuiLogger;
@@ -54,6 +56,35 @@ import java.util.concurrent.ConcurrentMap;
  * {@link StoredToken#binding() ConstraintBinding} (via {@link StoredToken#refreshed}), so a
  * proactively-refreshed token that came back as a plain bearer — or bound to a different key — is
  * rejected as a downgrade rather than silently keeping the stale binding ({@code CLIENT-18}).
+ * <p>
+ * <strong>Refresh is identity-bound as well as constraint-bound.</strong> Alongside that downgrade
+ * refusal, {@link #applyRefresh} carries the principal the refreshed access token names and
+ * {@link StoredToken#refreshed} refuses the refresh when a session already bound to a subject is handed
+ * a different one — so a refresh rotates credentials but never re-points a live session at another
+ * user. Both checks run inside the same atomic transform, so neither opens a check-then-act window.
+ * When the transform refuses a redemption the authorization server already <em>rotated</em>,
+ * {@link #doRefresh} fails the session closed: the presented token has been burned at the AS, so
+ * there is nothing left to keep using. The AS-issued successor is revoked (RFC 7009), and the store
+ * entry and the session's {@link de.cuioss.sheriff.token.client.token.RefreshTokenFamily} are cleared,
+ * forcing re-authentication. Restoring the presented token instead would leave the client holding a
+ * credential the AS has already invalidated, turning a local refusal into a remote failure on the very
+ * next refresh. A refusal on a <em>non-rotated</em> redemption needs none of this: the presented token
+ * is still valid at the AS and the family was never advanced, so the untouched store entry stays usable.
+ * <p>
+ * <strong>The same fail-closed rule covers refusals raised inside the exchange itself.</strong>
+ * {@link RefreshFlow#refresh} can refuse after the authorization server has already answered — the
+ * freshly issued access token fails client-side validation, the granted scope is broader than
+ * requested under the opt-in strict posture, or the successful response cannot be parsed at all — and
+ * every one of those reaches {@link #refresh} before any {@link RotationResult} exists, so rotation
+ * cannot be read off a result. The discriminator is instead the
+ * {@link de.cuioss.sheriff.token.client.flow.RefreshRedemption} the flow carries on every refusal it
+ * raises once the server has answered, read back through
+ * {@link RefreshFlow#redemptionOf(Throwable)}: present means the presented token was redeemed and the
+ * session is quarantined, absent means the request never reached redemption — a connection failure, a DNS failure, a non-success
+ * status — so the presented token is still valid and the session is deliberately left intact rather
+ * than destroyed over a transient fault. An unparseable success response is the one redeemed case
+ * where rotation is not computable at all; it is presumed rotated and cleared, without inventing a
+ * successor to revoke.
  * <p>
  * <strong>Logout is fail-closed with no stale-read window.</strong> {@link #revokeAndClear} performs a
  * single atomic take-and-clear via {@link TokenStore#remove(String)}: after it returns, the session's
@@ -181,11 +212,11 @@ public class TokenLifecycleManager {
 
     /**
      * Applies refreshed token material to a stored session, carrying the ID token forward and
-     * verifying the refreshed token's sender-constraint against the stored one ({@code CLIENT-18}).
-     * Does nothing and returns empty when no bundle is held. When the stored bundle was
-     * sender-constrained but {@code refreshedBinding} no longer confirms the same key, the transform
-     * throws {@link IllegalStateException} (a rejected downgrade) rather than writing a mismatched
-     * bundle.
+     * verifying the refreshed token's sender-constraint and principal against the stored ones
+     * ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held. When the stored
+     * bundle was sender-constrained but {@code refreshedBinding} no longer confirms the same key, or
+     * when the stored bundle is bound to a subject that {@code refreshedSubject} does not match, the
+     * transform throws {@link IllegalStateException} rather than writing a mismatched bundle.
      *
      * @param sessionId        the opaque session identifier; must not be {@code null} or blank
      * @param newAccessToken   the refreshed access token; must not be {@code null} or blank
@@ -193,18 +224,21 @@ public class TokenLifecycleManager {
      * @param newExpiresAt     the refreshed access-token expiry, or {@code null} when unknown
      * @param refreshedBinding the {@code cnf} binding confirmed on the refreshed token, or {@code null}
      *                         when the refreshed token is a plain bearer token
+     * @param refreshedSubject the principal the refreshed access token names, or {@code null} when it
+     *                         carries no subject
      * @return the updated stored bundle, or {@link Optional#empty()} when no bundle was held
      */
     public Optional<StoredToken> applyRefresh(String sessionId, String newAccessToken,
             @Nullable String newRefreshToken, @Nullable Instant newExpiresAt,
-            @Nullable ConstraintBinding refreshedBinding) {
-        return applyRefresh(sessionId, newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding, null);
+            @Nullable ConstraintBinding refreshedBinding, @Nullable String refreshedSubject) {
+        return applyRefresh(sessionId, newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding,
+                refreshedSubject, null);
     }
 
     /**
      * Applies refreshed token material to a stored session, carrying the supplied refreshed ID token
-     * (OIDC Core §12.2) and verifying the refreshed token's sender-constraint against the stored one
-     * ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held.
+     * (OIDC Core §12.2) and verifying the refreshed token's sender-constraint and principal against the
+     * stored ones ({@code CLIENT-18}). Does nothing and returns empty when no bundle is held.
      *
      * @param sessionId        the opaque session identifier; must not be {@code null} or blank
      * @param newAccessToken   the refreshed access token; must not be {@code null} or blank
@@ -212,19 +246,24 @@ public class TokenLifecycleManager {
      * @param newExpiresAt     the refreshed access-token expiry, or {@code null} when unknown
      * @param refreshedBinding the {@code cnf} binding confirmed on the refreshed token, or {@code null}
      *                         when the refreshed token is a plain bearer token
+     * @param refreshedSubject the principal the refreshed access token names, or {@code null} when it
+     *                         carries no subject
      * @param newIdToken       the refreshed, consistency-checked ID token, or {@code null} to keep the
      *                         current one when the AS omitted it on the refresh
      * @return the updated stored bundle, or {@link Optional#empty()} when no bundle was held
      */
     public Optional<StoredToken> applyRefresh(String sessionId, String newAccessToken,
             @Nullable String newRefreshToken, @Nullable Instant newExpiresAt,
-            @Nullable ConstraintBinding refreshedBinding, @Nullable String newIdToken) {
+            @Nullable ConstraintBinding refreshedBinding, @Nullable String refreshedSubject,
+            @Nullable String newIdToken) {
         // Atomic retrieve-transform-store: a concurrent revokeAndClear (logout) can no longer slip
         // between the read and the write and resurrect a just-revoked session, so a refresh applied
-        // after logout is a no-op rather than a stale-token write (CLIENT-22).
+        // after logout is a no-op rather than a stale-token write (CLIENT-22). The subject binding is
+        // checked inside the same transform for the same reason: comparing here, before the update,
+        // would reopen the check-then-act window the atomic update exists to close.
         return tokenStore.update(sessionId,
                 current -> current.refreshed(newAccessToken, newRefreshToken, newExpiresAt, refreshedBinding,
-                        newIdToken));
+                        refreshedSubject, newIdToken));
     }
 
     /**
@@ -243,8 +282,11 @@ public class TokenLifecycleManager {
      * This coordinator refreshes plain-bearer sessions; it applies the refreshed material with no
      * {@code cnf} binding, so a sender-constrained stored bundle fails closed (a downgrade rather than
      * a silent bearer refresh) — sender-constrained refresh is applied through
-     * {@link #applyRefresh(String, String, String, Instant, ConstraintBinding, String)} with the
-     * confirmed binding.
+     * {@link #applyRefresh(String, String, String, Instant, ConstraintBinding, String, String)} with
+     * the confirmed binding.
+     * <p>
+     * The refreshed principal is read from the validated refreshed access token and handed to the
+     * transform, so a session already bound to a subject refuses a refresh naming a different one.
      *
      * @param sessionId               the opaque session identifier; must not be {@code null} or blank
      * @param metadata                the resolved provider metadata (token + revocation endpoints);
@@ -259,9 +301,22 @@ public class TokenLifecycleManager {
      * @return the refreshed stored bundle, or {@link Optional#empty()} when no refreshable bundle is
      *         held
      * @throws de.cuioss.sheriff.token.commons.error.ClientProtocolException if refresh-token reuse is
-     *                               detected (the family is revoked and the store cleared first)
+     *                               detected (the family is revoked and the store cleared first), or
+     *                               if the granted scope is broader than requested under the opt-in
+     *                               strict posture
+     * @throws de.cuioss.sheriff.token.commons.error.TokenSheriffException if the exchange itself is
+     *                               refused — the refreshed access token fails validation, the strict
+     *                               scope posture refuses the grant, or the token request fails. When
+     *                               the authorization server had already redeemed the presented token
+     *                               the session is quarantined first; when it had not, the stored
+     *                               bundle is left untouched because that token is still usable
      * @throws IllegalStateException if the refreshed ID token is inconsistent with the refreshed
-     *                               access token
+     *                               access token, or if the refreshed access token names a principal
+     *                               other than the one the session is bound to. When the authorization
+     *                               server had already rotated the refresh token, the session is
+     *                               quarantined first — the rotated token is revoked (RFC 7009) and the
+     *                               store entry and rotation family are cleared — so the caller must
+     *                               re-authenticate rather than retry
      */
     public Optional<StoredToken> refresh(String sessionId, ProviderMetadata metadata,
             RefreshFlow refreshFlow, RevocationClient revocationClient,
@@ -276,6 +331,7 @@ public class TokenLifecycleManager {
         CompletableFuture<Optional<StoredToken>> mine = new CompletableFuture<>();
         CompletableFuture<Optional<StoredToken>> alreadyInFlight = inFlight.putIfAbsent(sessionId, mine);
         if (alreadyInFlight != null) {
+            onSingleFlightJoin(sessionId);
             return awaitInFlight(alreadyInFlight);
         }
         try {
@@ -291,6 +347,34 @@ public class TokenLifecycleManager {
         }
     }
 
+    /**
+     * Observation point reached by a caller that has just <em>joined</em> an in-flight rotation — its
+     * {@code putIfAbsent} returned the leading caller's future — and is about to block on that future.
+     * The default implementation does nothing.
+     * <p>
+     * <strong>This hook is deliberately not dead code, and must not be removed as such.</strong> It
+     * exists so the single-flight invariant ("a concurrent caller joins the one rotation rather than
+     * redeeming the refresh token a second time") is <em>testable</em> without a timing assumption. The
+     * join path touches no collaborator a test can decorate: it reads the map and waits. Every signal
+     * available from outside — the leading caller reaching the token endpoint, the leading caller
+     * reaching the store — is a proxy that fires strictly <em>before</em> the join and therefore leaves
+     * a window in which the leading caller can finish and release its entry, letting the joining caller
+     * start a second redemption and turning the test flaky. Announcing the join itself, at the only
+     * point where "this caller has joined" is a fact rather than a prediction, closes that window with
+     * a real happens-before edge: the joining caller already holds the leading caller's future when the
+     * signal fires, so the rotation it joins cannot be missed no matter how the two threads are
+     * scheduled afterwards.
+     * <p>
+     * It carries no production behaviour and no production subclass overrides it. Implementations must
+     * not throw and must not block indefinitely — this runs on the joining caller's thread, inside the
+     * public {@link #refresh} call.
+     *
+     * @param sessionId the session whose in-flight rotation was joined; never {@code null}
+     */
+    protected void onSingleFlightJoin(String sessionId) {
+        // No-op by default: see the Javadoc above for why this observation point exists.
+    }
+
     private Optional<StoredToken> doRefresh(String sessionId, ProviderMetadata metadata,
             RefreshFlow refreshFlow, RevocationClient revocationClient,
             IdTokenValidationBridge idTokenValidationBridge, ClientAuthentication clientAuthentication) {
@@ -303,12 +387,44 @@ public class TokenLifecycleManager {
             return Optional.empty();
         }
 
-        RotationResult rotation = refreshFlow.refresh(metadata, presentedRefreshToken);
+        // A refusal raised INSIDE the exchange — client-side access-token validation, the strict
+        // scope-reconciliation refusal, or a 2xx response whose body cannot be parsed — reaches the
+        // caller before any RotationResult exists, so rotation cannot be read off a result here. Every
+        // such refusal instead CARRIES the redemption state it was raised under, which
+        // RefreshFlow.redemptionOf reads back. Its ABSENCE is the discriminator that must not be
+        // collapsed — an empty result means the failure happened BEFORE redemption (connection
+        // failure, DNS failure, non-2xx), so the presented refresh token is still valid and clearing
+        // the session would destroy a working one over a transient fault.
+        RotationResult rotation;
+        try {
+            rotation = refreshFlow.refresh(metadata, presentedRefreshToken);
+        } catch (TokenSheriffException refusedExchange) {
+            RefreshFlow.redemptionOf(refusedExchange)
+                    .filter(RefreshRedemption::presentedTokenBurned)
+                    .ifPresent(redeemed -> quarantineRedeemedRefresh(sessionId, metadata, redeemed,
+                            revocationClient, clientAuthentication));
+            throw refusedExchange;
+        }
 
-        // OIDC Core §12.2 consistency is checked BEFORE the family is advanced: an inconsistent
-        // refreshed ID token must be refused without mutating the rotation family or the store, so a
-        // later legitimate refresh is not poisoned into a false-reuse by a half-applied rotation.
-        String refreshedIdToken = verifiedRefreshedIdToken(rotation, idTokenValidationBridge);
+        // OIDC Core §12.2 consistency is checked BEFORE the family is advanced, so a refusal here can
+        // never leave a half-applied rotation behind. What the refusal must do next depends on whether
+        // the AS rotated: when it did not, the presented refresh token is still valid, so the refusal
+        // propagates with the family and the store left untouched. When it did, the AS has already
+        // burned the presented token, so keeping it would leave the session holding a dead credential —
+        // the same defect the post-transform quarantine below closes. The session is therefore
+        // quarantined fail-closed on the rotated successor. The family has not been advanced at this
+        // point, and quarantineRejectedRotation does not assume it was: it revokes the rotated token and
+        // clears both the store entry and the family unconditionally.
+        String refreshedIdToken;
+        try {
+            refreshedIdToken = verifiedRefreshedIdToken(rotation, idTokenValidationBridge);
+        } catch (IllegalStateException inconsistent) {
+            if (rotation.rotated()) {
+                quarantineRejectedRotation(sessionId, metadata, rotation.refreshToken(), revocationClient,
+                        clientAuthentication);
+            }
+            throw inconsistent;
+        }
 
         if (rotation.rotated()) {
             RefreshTokenFamily family = families.computeIfAbsent(sessionId,
@@ -326,23 +442,100 @@ public class TokenLifecycleManager {
                 ? Instant.now().plusSeconds(rotation.accessTokenExpiresInSeconds())
                 : null;
 
-        return applyRefresh(sessionId, rotation.accessToken().getRawToken(), rotation.refreshToken(),
-                refreshedExpiry, null, refreshedIdToken);
+        // The principal the refreshed access token names, handed to the transform so a session already
+        // bound to a subject refuses a refresh that names a different one. It is read from the same
+        // validated access token the §12.2 consistency check above uses.
+        String refreshedSubject = rotation.accessToken().getSubject().orElse(null);
+
+        // When the store write below is refused — the identity or sender-constraint binding check
+        // inside the atomic transform rejects this refresh — the store keeps the pre-refresh token
+        // untouched. If the AS rotated, that pre-refresh token has nonetheless been burned server-side,
+        // so the session is quarantined fail-closed rather than left holding a dead credential. If the
+        // AS did not rotate, the presented token is still valid and the untouched store entry needs no
+        // further action.
+        try {
+            return applyRefresh(sessionId, rotation.accessToken().getRawToken(), rotation.refreshToken(),
+                    refreshedExpiry, null, refreshedSubject, refreshedIdToken);
+        } catch (IllegalStateException rejected) {
+            if (rotation.rotated()) {
+                quarantineRejectedRotation(sessionId, metadata, rotation.refreshToken(), revocationClient,
+                        clientAuthentication);
+            }
+            throw rejected;
+        }
     }
 
     private void revokeReusedFamily(String sessionId, ProviderMetadata metadata, String reusedToken,
             RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
         LOGGER.warn(ClientLogMessages.WARN.REFRESH_REUSE_REVOCATION, maskSessionId(sessionId));
-        metadata.getRevocationEndpoint().ifPresent(endpoint -> {
-            try {
-                revocationClient.revoke(endpoint, reusedToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
-            } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
-                // Revocation is best-effort: a failed AS revocation must not stop the client-side
-                // fail-closed store clear below, nor mask the reuse signal to the caller.
-                LOGGER.debug(revocationFailure, "RFC 7009 revocation on detected reuse failed: %s",
-                        revocationFailure.getMessage());
-            }
-        });
+        revokeAndClearFailClosed(sessionId, metadata, reusedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
+     * Fails a session closed after the authorization server rotated the refresh token but the client
+     * then refused the redemption — either because the refreshed ID token is inconsistent with the
+     * refreshed access token (OIDC Core §12.2) or because the atomic store transform rejected an
+     * identity or sender-constraint binding mismatch.
+     * <p>
+     * By the time either refusal fires, the AS has already issued {@code rotatedToken} and invalidated
+     * the token this client presented, so there is no usable credential left to keep: restoring the
+     * presented token would only hand the caller one the AS has burned. The refusal is a security event
+     * on a token the AS just minted, so the rotated token is revoked at the AS (RFC 7009, best-effort)
+     * and both the store entry and the rotation family are dropped, forcing re-authentication.
+     */
+    private void quarantineRejectedRotation(String sessionId, ProviderMetadata metadata, String rotatedToken,
+            RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
+        LOGGER.warn(ClientLogMessages.WARN.REFRESH_IDENTITY_REJECTED_QUARANTINE, maskSessionId(sessionId));
+        revokeAndClearFailClosed(sessionId, metadata, rotatedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
+     * Fails a session closed after the authorization server redeemed the presented refresh token but
+     * {@link RefreshFlow#refresh} then refused the exchange — the freshly issued access token failed
+     * client-side validation, the granted scope was broader than requested under the opt-in strict
+     * posture, or the successful response could not be parsed at all.
+     * <p>
+     * The disposition follows what is actually known about rotation, and never invents a token to
+     * revoke. When the authorization server issued a successor, that successor is revoked (RFC 7009)
+     * and the session cleared, exactly as the post-transform quarantine does. When the response was
+     * unparseable, no successor exists on this side and rotation is not computable even in principle:
+     * the presented token is presumed burned, so the store entry and rotation family are cleared, but
+     * no revocation is attempted because there is no token to name in it.
+     */
+    private void quarantineRedeemedRefresh(String sessionId, ProviderMetadata metadata,
+            RefreshRedemption redemption, RevocationClient revocationClient,
+            ClientAuthentication clientAuthentication) {
+        String rotatedToken = redemption.rotatedRefreshToken();
+        if (rotatedToken == null) {
+            LOGGER.warn(ClientLogMessages.WARN.REFRESH_REDEMPTION_UNVERIFIABLE_QUARANTINE,
+                    maskSessionId(sessionId));
+        } else {
+            LOGGER.warn(ClientLogMessages.WARN.REFRESH_IDENTITY_REJECTED_QUARANTINE, maskSessionId(sessionId));
+        }
+        revokeAndClearFailClosed(sessionId, metadata, rotatedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
+     * Revokes {@code token} at the authorization server (best-effort) and clears the session's store
+     * entry and rotation family, so the client-side fail-closed clear happens whether or not the AS
+     * revocation succeeds. A {@code null} {@code token} means no revocable credential is known — the
+     * clear still happens, and no revocation is attempted.
+     */
+    private void revokeAndClearFailClosed(String sessionId, ProviderMetadata metadata,
+            @Nullable String token, RevocationClient revocationClient,
+            ClientAuthentication clientAuthentication) {
+        if (token != null) {
+            metadata.getRevocationEndpoint().ifPresent(endpoint -> {
+                try {
+                    revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
+                } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
+                    // Revocation is best-effort: a failed AS revocation must not stop the client-side
+                    // fail-closed store clear below, nor mask the original refusal to the caller.
+                    LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
+                            revocationFailure.getMessage());
+                }
+            });
+        }
         tokenStore.remove(sessionId);
         families.remove(sessionId);
     }
