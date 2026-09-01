@@ -1,0 +1,128 @@
+= ADR-0004: Scope broadening on refresh is accepted and reported by default, refused only under opt-in strict mode
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: An OAuth 2.0 client has no normative duty to reject a broadened refresh grant; the client accepts and reports the delta by default and refuses it only under an opt-in strict posture
+// tags: oauth, refresh-token, scope, security-posture, client
+// affects: token-sheriff-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+An OAuth 2.0 client that sends a `scope` parameter on a refresh-token request cannot assume
+the authorization server grants exactly that scope back. The authorization server is free to
+narrow, canonicalise, or otherwise change the granted set, and discloses the outcome through
+the response's own `scope` parameter — an omitted parameter is defined as identical to the
+request. A client's refresh path therefore faces a structural choice point independent of any
+particular authorization server's behaviour: what should happen when the granted scope is a
+strict superset of what was requested?
+
+The two shapes this can take are a compliance obligation ("the client must refuse a broadened
+grant because the protocol forbids it") or an operational-hardening posture ("the client should
+make an unexpected delta observable, without assuming it is illegitimate"). Which shape applies
+determines whether a benign authorization-server quirk — canonicalising or accumulating scope
+sets, a common and attested pattern among production identity providers — becomes an outage or
+becomes an observability signal. Because the resource server remains the actual enforcement
+point for any claim a token carries, the client's role in this space is bounded: it can decide
+whether to trust or refuse what the authorization server discloses, but it cannot itself
+constrain what the resource server accepts.
+
+== Decision
+
+The client reconciles the granted scope against the configured scope on every refresh and
+classifies the outcome into one of four cases: `EQUAL`, `NARROWED`, `BROADENED`, or `UNDECLARED`
+(the authorization server omitted the `scope` parameter). By default the client is lenient: a
+`BROADENED` or `NARROWED` outcome is accepted, logged at `WARN`, and surfaced on the refresh
+result so the calling application can act on it; `EQUAL` and `UNDECLARED` are accepted silently.
+A per-client configuration flag switches the client into a strict posture, under which a
+`BROADENED` outcome alone is refused; `NARROWED`, `EQUAL`, and `UNDECLARED` are handled
+identically to the lenient mode in every posture. The reconciliation is skipped entirely when the
+client has no configured scope to compare against.
+
+The strict posture exists for deployments paired with a known, well-behaved authorization server
+that wants exact-match-or-subset semantics; it is opt-in rather than the default because no
+normative source obliges a client to reject a broadened grant, and defaulting to refusal would
+convert a routine authorization-server behaviour into a total authentication outage with no
+attacker involved.
+
+== Consequences
+
+=== Positive
+
+* A grant delta that would otherwise be silently discarded becomes observable to both the
+  operator (via the `WARN` log record) and the calling application (via the reconciliation
+  result), independent of which posture is active.
+* The default posture tolerates the authorization-server behaviours attested across major
+  production identity providers — scope canonicalisation, accumulation, or narrowing — without
+  requiring per-deployment tuning.
+* A deployment that pairs with an authorization server known not to canonicalise or expand scope
+  sets can opt into exact-match-or-subset enforcement without any change to the reconciliation
+  algorithm itself.
+
+=== Negative
+
+* The reconciliation and its configuration flag are additional surface the refresh path must
+  carry and keep tested in both postures.
+* A configured scope value with embedded whitespace inside a single entry silently
+  double-counts as two granted scope-tokens, which can misclassify an exactly-granted scope as
+  broadened; this failure mode must be closed at configuration-input validation, not inside the
+  reconciliation algorithm.
+
+=== Risks
+
+* An operator who enables the strict posture against an authorization server that canonicalises
+  or accumulates scope sets converts that server's ordinary behaviour into a standing
+  authentication outage, with no attacker in the loop. The posture is opt-in and documented as
+  appropriate only against a known, non-canonicalising authorization server specifically to bound
+  this risk, but the risk is not eliminated by the default alone once an operator opts in.
+* A broadened grant accepted under the lenient default is, by construction, not refused at the
+  client. The resource server remains the sole enforcement point for whatever the resulting token
+  claims; a deployment relying on the client to constrain granted scope is relying on a boundary
+  this decision deliberately does not provide.
+
+== Alternatives Considered
+
+*Refuse a broadened grant by default.* This was the design's original assumption, on the belief
+that accepting a scope broader than requested is a protocol violation the client must police.
+Rejected once checked against the applicable normative sources: no published specification
+imposes a client-side duty to reject or even inspect a broadened refresh grant, and the
+authorization server is affirmatively permitted to disclose a scope the client did not request,
+obliging it only to disclose the result. The nearest normative client-side scope check exists
+only in a conformance profile scoped to the authorization-code response, not the refresh
+response, and was withdrawn from that profile's successor. No mature client implementation
+surveyed rejects a broadened grant by default; the one that does treats any mismatch as
+disqualifying and is regarded as defective for exactly that reason. Refusing by default would
+therefore impose a stricter contract than the protocol, the threat-modelling literature, or
+production practice support, and would convert ordinary scope canonicalisation into an
+unconditional outage.
+
+*Refuse a broadened grant unconditionally, with no opt-in escape hatch.* Rejected for the same
+reason as full-by-default refusal, compounded: a deployment paired with a canonicalising or
+accumulating authorization server would have no way to run at all, regardless of operator intent.
+
+*Silently accept every scope delta with no reporting.* Rejected because it reproduces the
+original blind spot this decision closes: a grant delta an operator would want to know about —
+whether to investigate an unexpected authorization-server change or merely to confirm expected
+behaviour — becomes permanently invisible. Observability costs one log record and one result
+field; discarding it recovers nothing in return.
+
+The alternatives share one failure: each ties the client's scope-delta *disposition* (accept or
+refuse) to a fixed default that does not match what the applicable specifications require and
+what production authorization servers actually do. The adopted decision separates disposition
+from reporting — every delta is reported regardless of posture — and makes the disposition itself
+a per-deployment choice rather than a protocol-wide assumption.
+
+== References
+
+* `token-sheriff-client` refresh-path scope reconciliation and its per-client strict-mode
+  configuration flag
+* `doc/client/threat-model.adoc` — refresh-path threat model, scope-reconciliation control
+* `doc/client/specification/token-handling.adoc` — refresh-path specification, mode × outcome
+  table

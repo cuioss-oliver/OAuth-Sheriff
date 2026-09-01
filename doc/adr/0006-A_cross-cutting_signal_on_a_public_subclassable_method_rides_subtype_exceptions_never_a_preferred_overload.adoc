@@ -1,0 +1,132 @@
+= ADR-0006: A cross-cutting signal on a public subclassable method rides subtype exceptions, never a preferred overload
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: Carrying a new signal by adding an overload the production path prefers silently bypasses any subclass override of the original method; carrying it on a thrown-type hierarchy preserves the single overridable entry point
+// tags: public-api, backward-compatibility, exception-design, client
+// affects: token-sheriff-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A public, subclassable type with one overridable entry method sometimes needs to carry a new
+signal through that entry point — some fact about the outcome that the original return type or
+thrown-type contract does not express. Two mechanically similar ways to add that signal exist:
+extend the method's return or thrown-type contract in place, or add a new overload of the same
+method that carries the extra signal, and have the type's own internal callers switch to calling
+the new overload preferentially.
+
+The two are not equivalent for a subclassable type. A consumer that overrides the original
+method to intercept, instrument, or stub the entry point is relying on every internal call
+inside the type to reach that one method. If an internal caller switches to a new overload
+instead, the override is bypassed for every subsequent internal invocation: the subclass compiles
+unchanged, throws no exception, emits no runtime signal, and its override becomes silently dead
+code from the moment the production path starts preferring the new overload. The failure surfaces
+only if and when a downstream consumer notices its override never fires — which, for a lightly
+exercised consumer, can be much later than the change that caused it. An added-overload approach
+is therefore not an additive extension of a subclassable public method's contract; it is a
+break disguised as an addition, and the disguise is exactly what makes it dangerous: it compiles,
+and it passes any test that does not specifically call the original entry point through a
+subclass.
+
+== Decision
+
+A new signal that must be visible on a public, subclassable type's return path — even when the
+signal is produced by, and only meaningful to, a subset of the type's internal callers — is
+carried on the exception hierarchy the method already throws, as a marker or accessor implemented
+by dedicated subtypes of the existing thrown types, rather than by adding a preferred overload of
+the entry method. The original method signature remains the single call path every internal
+caller uses; a caller that needs the new signal reads it back off the thrown exception (or its
+absence) rather than by having called a different method to get it.
+
+Concretely, this requires the new signal's carrier types to be genuine subtypes of the exception
+types the method's documented contract already declares — never a new, unrelated thrown type —
+so that every existing `catch` clause, every `assertThrows` against the original type, and every
+documented `@throws` clause on the method remains valid without modification. A carrier type that
+is not a documented-contract subtype would itself be a breaking change to the method's thrown-type
+contract, defeating the purpose of choosing this mechanism over the overload in the first place.
+
+== Consequences
+
+=== Positive
+
+* The type's public entry point stays singular: every internal caller invokes the same method
+  signature a subclass override intercepts, so an override authored against the documented API
+  keeps firing regardless of how many internal call sites are added or changed later.
+* Every existing `catch` clause, `assertThrows` assertion, and documented `@throws` clause against
+  the original thrown-type contract remains valid, because the new carriers are subtypes of the
+  types already declared, not a parallel type.
+* The mechanism generalizes: any future signal that must ride the same entry point follows the
+  same pattern — a further subtype, not a further overload — without re-opening the question.
+
+=== Negative
+
+* A caller that wants the new signal must recognise and downcast (or type-check) the exception
+  rather than reading a return value or a callback parameter directly, which is a less direct
+  read than an added parameter would have been.
+* The mechanism is only available when the entry point already communicates failure via a thrown
+  exception. A method whose contract has no natural place to attach a subtype marker (for
+  example, one that fails via a sentinel return value rather than an exception) needs a different
+  solution.
+
+=== Risks
+
+* A future maintainer adding a new call site inside the type can still reintroduce the rejected
+  failure mode by adding a preferred overload out of familiarity with that pattern elsewhere in
+  the codebase; the risk is mitigated only by this decision being visible at review time, not by
+  any mechanism that prevents the mistake structurally.
+* If a carrier subtype is ever added as a sibling of the documented thrown type instead of a true
+  subtype of it, the same silent-break failure mode this decision exists to avoid reappears in a
+  different form — as a documented-`@throws`-contract violation instead of as a bypassed override.
+
+== Alternatives Considered
+
+*Add a new overload of the entry method that carries the extra signal (as a callback parameter),
+and switch internal callers to call the new overload preferentially, keeping the original overload
+as a thin delegation.* This is the alternative the failure mode above describes directly. Rejected
+because it silently defeats any subclass override of the original overload the moment an internal
+caller switches to the new one: the override compiles, is never invoked, and produces no signal
+that it stopped firing. This was caught only because a specific integration test relied on the
+overridden method being called on the production path and consequently hung waiting for a signal
+that never arrived — a detection mechanism that depends on a consumer happening to test the exact
+interception point, not on anything structural.
+
+*Carry the signal off-band through thread-local or per-call context state, read back by the
+original single-entry-point method's internal implementation.* Rejected: it restores the single
+overridable entry point, but confines the signal to whichever thread happens to read the
+off-band state at the right moment. A subclass override — or any consumer — that hands the
+in-flight exchange to a different thread (a common pattern in an asynchronous or single-flight
+coordination path) loses the signal silently. This is the same class of failure as the rejected
+overload — an invisible loss of a signal a caller has no way to detect — merely relocated from a
+call-graph problem to a threading problem rather than removed.
+
+*Keep the added overload, but force the break to be loud — for example, by making the original
+overload `final` so a subclass cannot compile an override of it that no longer fires.* Rejected: a
+compile-time break is not an acceptable outcome for a public API either — it forces every existing
+consumer, including any that override the method for entirely legitimate reasons unrelated to this
+signal, to change their code on the next upgrade. A structural fix that trades a silent runtime
+break for a guaranteed compile break has only relocated the cost, not removed it, and it still
+requires every consumer to react to a change unrelated to what they were doing.
+
+The three alternatives share a common shape: each treats the new signal as something to attach to
+a *new or relocated call path* rather than to the *outcome* of the one call path a subclass is
+already entitled to rely on. The adopted decision generalizes to any public, subclassable type
+with a single overridable entry point: a new signal produced only by some internal callers
+belongs on the outcome the entry point already returns or throws, never on a competing path to
+reach the same behaviour.
+
+== References
+
+* `token-sheriff-client` refresh path — the `Redeemed*` exception hierarchy
+  (`RedeemedRefreshFailure`, `RedeemedResponseException`, `RedeemedScopeRefusalException`,
+  `RedeemedValidationRefusalException`) and `RefreshRedemption`, the accessor type read back off
+  the thrown exception
+* ADR-0005 (this ADR set) — the session-lifecycle decision the redemption signal this mechanism
+  carries exists to serve
