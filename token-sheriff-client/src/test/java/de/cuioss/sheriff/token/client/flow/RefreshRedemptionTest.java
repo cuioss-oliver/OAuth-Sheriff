@@ -81,6 +81,43 @@ class RefreshRedemptionTest {
     }
 
     @Test
+    @DisplayName("Should refuse an unknown-rotation instance that carries a successor")
+    void shouldRefuseASuccessorOnTheUnknownState() {
+        String successor = Generators.letterStrings(20, 40).next();
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> new RefreshRedemption(successor, false),
+                "rotationUnknown has no successor by definition, so a token there is fabricated");
+
+        assertTrue(thrown.getMessage().contains("rotatedRefreshToken"),
+                "the refusal must name the offending component");
+    }
+
+    @Test
+    @DisplayName("Should refuse a blank successor through the canonical constructor, not only through rotated")
+    void shouldRefuseABlankSuccessorThroughTheCanonicalConstructor() {
+        assertAll("blank successor",
+                () -> assertThrows(IllegalArgumentException.class, () -> new RefreshRedemption("", true),
+                        "an empty successor is an unusable revocation target"),
+                () -> assertThrows(IllegalArgumentException.class, () -> new RefreshRedemption("   ", true),
+                        "a whitespace-only successor is an unusable revocation target"));
+    }
+
+    @Test
+    @DisplayName("Should leave every legal component pairing constructible through the canonical constructor")
+    void shouldAcceptEveryLegalComponentPairing() {
+        String successor = Generators.letterStrings(20, 40).next();
+
+        assertAll("legal pairings",
+                () -> assertEquals(RefreshRedemption.rotated(successor), new RefreshRedemption(successor, true),
+                        "a known rotation carrying a usable successor is the rotated state"),
+                () -> assertEquals(RefreshRedemption.notRotated(), new RefreshRedemption(null, true),
+                        "a known rotation carrying no successor is the legitimate RFC 6749 §6 reuse outcome"),
+                () -> assertEquals(RefreshRedemption.rotationUnknown(), new RefreshRedemption(null, false),
+                        "an undetermined rotation carrying no successor is the fail-closed state"));
+    }
+
+    @Test
     @DisplayName("Should redact the successor token from toString while keeping its presence visible")
     void shouldRedactSuccessorInToString() {
         String successor = Generators.letterStrings(20, 40).next();

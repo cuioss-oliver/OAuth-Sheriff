@@ -46,10 +46,13 @@ import java.util.Objects;
  *
  * @param rotatedRefreshToken the successor the authorization server issued, or {@code null} when it
  *                            did not rotate or when rotation is unknown. Never a fabricated value:
- *                            {@code null} on the unknown state means "no token to revoke", not "no
- *                            rotation happened"
+ *                            the canonical constructor <em>rejects</em> a non-{@code null} token on
+ *                            the unknown state, so {@code null} there means "no token to revoke", not
+ *                            "no rotation happened". When present it is rejected unless non-blank — a
+ *                            blank successor is an unusable revocation target
  * @param rotationKnown       whether the response was usable enough to determine rotation at all;
- *                            {@code false} only for {@link #rotationUnknown()}
+ *                            {@code false} only for {@link #rotationUnknown()}, and the canonical
+ *                            constructor enforces that such an instance carries no successor
  * @since 1.0
  * @author Oliver Wolff
  * @see <a href="https://www.rfc-editor.org/rfc/rfc6749#section-6">RFC 6749 §6 - Refreshing an Access Token</a>
@@ -57,15 +60,43 @@ import java.util.Objects;
 public record RefreshRedemption(@Nullable String rotatedRefreshToken, boolean rotationKnown) {
 
     /**
+     * Rejects the two component pairings the type's own contract declares impossible, so no instance
+     * that disagrees with its own state is constructible through any entry point.
+     * <p>
+     * {@code (token != null, rotationKnown == true)} is {@link #rotated(String)} and
+     * {@code (null, true)} is {@link #notRotated()} — both are legal RFC 6749 §6 outcomes and are
+     * deliberately left alone.
+     *
+     * @throws IllegalArgumentException when {@code rotationKnown} is {@code false} and a successor is
+     *                                  supplied — the unknown state has no successor to revoke by
+     *                                  definition, so a token there is a fabricated revocation target
+     * @throws IllegalArgumentException when a supplied successor is blank — a blank token is an
+     *                                  unusable revocation target
+     */
+    public RefreshRedemption {
+        if (!rotationKnown && rotatedRefreshToken != null) {
+            throw new IllegalArgumentException(
+                    "rotationUnknown carries no successor: rotatedRefreshToken must be null when rotationKnown is false");
+        }
+        if (rotatedRefreshToken != null && rotatedRefreshToken.isBlank()) {
+            throw new IllegalArgumentException("rotatedRefreshToken must not be blank");
+        }
+    }
+
+    /**
+     * The {@code null} rejection is this factory's own parameter contract — distinct from the record
+     * component, which is {@link Nullable} because {@link #notRotated()} and {@link #rotationUnknown()}
+     * legitimately carry no successor. The blank rejection is not repeated here: the canonical
+     * constructor enforces it for every entry point.
+     *
      * @param rotatedRefreshToken the successor the authorization server issued; must not be
      *                            {@code null} or blank
      * @return the redemption state for a rotating authorization server
+     * @throws NullPointerException     when {@code rotatedRefreshToken} is {@code null}
+     * @throws IllegalArgumentException when {@code rotatedRefreshToken} is blank
      */
     public static RefreshRedemption rotated(String rotatedRefreshToken) {
         Objects.requireNonNull(rotatedRefreshToken, "rotatedRefreshToken must not be null");
-        if (rotatedRefreshToken.isBlank()) {
-            throw new IllegalArgumentException("rotatedRefreshToken must not be blank");
-        }
         return new RefreshRedemption(rotatedRefreshToken, true);
     }
 
