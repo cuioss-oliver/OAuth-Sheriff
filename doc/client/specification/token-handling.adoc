@@ -96,13 +96,16 @@ its own binding, closing that asymmetry:
   userinfo `sub` binding.
 * A *mismatch refuses the refresh fail-closed*: the atomic store transform writes nothing, so a
   refused refresh can never become a partial write.
-* When the authorization server had *already rotated* the refresh token before the mismatch was
-  detected, refusing is not enough — the presented token is burned at the server, so keeping it
-  would leave the client holding a dead credential that fails, or trips the server's own reuse
-  detection, on the next refresh. That case is therefore *quarantined*: the server-issued successor
-  is revoked (RFC 7009), and the store entry and rotation family are cleared, forcing
-  re-authentication. When the server returned no new refresh token (RFC 6749 §6 permits omitting
-  it), the presented token is still valid and the untouched store entry stays usable.
+* When the authorization server had *already rotated* the refresh token before the refusal, refusing
+  is not enough — the presented token is burned at the server, so keeping it would leave the client
+  holding a dead credential that fails, or trips the server's own reuse detection, on the next
+  refresh. That case is therefore *quarantined*: the server-issued successor is revoked (RFC 7009),
+  and the store entry and rotation family are cleared, forcing re-authentication. The quarantine is
+  keyed on the *refusal itself, not on its reason*: a refused sender-constraint downgrade
+  (<<_sender_constraint_preservation>>) is quarantined on exactly the same terms as a `sub`
+  mismatch, because the presented token is equally burned either way. When the server returned no
+  new refresh token (RFC 6749 §6 permits omitting it), the presented token is still valid and the
+  untouched store entry stays usable.
 * When the bundle carries *no* subject yet, the check is skipped and the refreshed subject is
   adopted — the binding takes effect from the first refresh that names a principal.
 * Where the authorization server also returns a refreshed ID token, it is validated through the
@@ -188,7 +191,7 @@ authorization metadata rather than credentials, so unlike the token fields they 
 full by `toString()` — which is what makes a grant delta diagnosable from a log line.
 ====
 
-== Preserving the sender-constraint
+== [[_sender_constraint_preservation]] Preserving the sender-constraint
 
 Where a retrieved token is sender-constrained — DPoP (`cnf.jkt`) or mTLS-bound — the engine
 keeps the binding intact across storage, refresh and any forwarding
@@ -198,6 +201,14 @@ associated with its proof-key / certificate binding, refresh preserves the const
 storage is kept minimal so a bound token is never copied more widely than the lifecycle
 requires. A sender-constrained token MUST NOT be degraded to a replayable bearer token by the
 way it is stored or forwarded.
+
+A refresh that would apply no confirmed `cnf` binding to a sender-constrained bundle is therefore
+*refused* by the same atomic store transform that enforces the subject binding — the refusal is
+independent of what the authorization server returned, since the client cannot preserve a
+constraint it was not handed. The refused session is *not* left holding its previous bundle: by the
+time the transform refuses, the server has already rotated, so the session is quarantined on the
+terms described in <<_refresh_identity_binding>> and the caller must re-authenticate. Sender-constrained
+refresh is applied through the `applyRefresh` overload that carries the confirmed binding.
 
 * Source: https://www.rfc-editor.org/rfc/rfc9449[RFC 9449], https://www.rfc-editor.org/rfc/rfc8705[RFC 8705].
 

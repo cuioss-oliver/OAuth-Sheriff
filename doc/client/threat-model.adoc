@@ -212,8 +212,12 @@ The client engine:
   at all, and that asymmetry was the gap.
 | Bind the stored session to the `sub` of the validated access token (`StoredToken.subject`). On
   every refresh, the subject of the newly validated access token is compared against the bound
-  subject in constant time; a mismatch *refuses the refresh fail-closed* and leaves the stored
-  bundle untouched, rather than overwriting it. Where the authorization server also returns a
+  subject in constant time; a mismatch *refuses the refresh fail-closed* — the atomic store
+  transform writes nothing, so a refused refresh never becomes a partial write. Where the
+  authorization server had *already rotated* the refresh token before the refusal, the presented
+  token is burned server-side, so the session is *quarantined* rather than preserved: the
+  server-issued successor is revoked (RFC 7009) and the store entry and rotation family are
+  cleared, forcing re-authentication. Where the authorization server also returns a
   refreshed ID token, it is validated and cross-checked for `iss`/`sub` consistency against the
   refreshed access token before it is carried forward.
 | https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse[OIDC Core §12.2]
@@ -287,7 +291,7 @@ integration suite covers only threats reproducible against real providers:
 | T-TOKEN-REPLAY / T-CONSTRAINT-LOSS | `TokenDispatcher` issues DPoP / mTLS-bound responses; the binding is validated and preserved through storage/refresh.
 | T-LOGOUT | `EndSessionDispatcher` adversarial mode returns open-redirect / mismatched `post_logout_redirect_uri`, which are rejected; revocation of held tokens asserted.
 | T-REFRESH-THEFT | `TokenDispatcher` refresh mode drives rotation; a reused rotated token triggers family revocation.
-| T-REFRESH-IDENTITY | `TokenDispatcher` refresh mode returns an access token carrying a substituted `sub`; the refresh is refused and the stored bundle asserted untouched. A matched positive control — a refresh whose `sub` matches — is asserted to be accepted and to rotate the bundle, so deleting the guard turns a test red rather than merely leaving one green.
+| T-REFRESH-IDENTITY | `TokenDispatcher` refresh mode returns an access token carrying a substituted `sub`; the refresh is refused and, since the dispatcher has already rotated, the session asserted quarantined. A matched positive control — a refresh whose `sub` matches — is asserted to be accepted and to rotate the bundle, so deleting the guard turns a test red rather than merely leaving one green.
 | T-SCOPE-DRIFT | `TokenDispatcher` refresh mode returns broadened, narrowed, equal and absent `scope` values; each is asserted to resolve to the matching `scopeDelta`, and the broadened case is asserted accepted-and-`WARN`-logged in the default posture and refused with `ClientProtocolException` under `strictScopeReconciliation`.
 | T-IDTOKEN-INTEGRITY / T-AUD-CONFUSION | `TokenDispatcher` / `UserInfoDispatcher` emit tampered claims and `sub` mismatches; validation pipeline rejects; userinfo `sub` binding enforced.
 | T-SSRF-ADVERTISED | The `de.cuioss.http.security` attack-database corpora are driven through the back-channel egress-path validation; traversal / injection / encoding-evasion advertised paths are refused before any fetch, and a non-TLS endpoint is refused per client.

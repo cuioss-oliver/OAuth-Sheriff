@@ -64,7 +64,11 @@ import static org.junit.jupiter.api.Assertions.*;
  *       coordinator hard-codes a {@code null} refreshed binding, so a sender-constrained bundle fails
  *       closed — <strong>regardless of what the authorization server returned</strong>. It is not
  *       detecting a server-side downgrade; the AS here in fact returns a still-bound token, as the
- *       first test proves.</li>
+ *       first test proves. Failing closed here means <em>quarantine</em>, not preservation: the
+ *       refusal is raised by the atomic store transform only after the AS has already rotated, so the
+ *       refresh token this client presented is burned server-side. Keeping the bundle would hand the
+ *       caller a dead credential, so the store entry and rotation family are cleared and the caller
+ *       must re-authenticate.</li>
  * </ul>
  * Both start from a genuine {@code dpop-client} acquisition with a real {@code cnf.jkt}, never from a
  * fabricated thumbprint stapled onto a plain bearer token.
@@ -130,10 +134,10 @@ class RefreshConstraintLifecycleSpecIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("Should refuse the coordinator refresh, which applies no confirmed binding at all")
+    @DisplayName("Should refuse the coordinator refresh and quarantine the session, applying no confirmed binding")
     void shouldRefuseCoordinatorRefreshThatAppliesNoConfirmedBinding() {
         String sessionId = newSessionId();
-        StoredToken stored = storeBoundSession(sessionId);
+        storeBoundSession(sessionId);
 
         IllegalStateException refusal = assertThrows(IllegalStateException.class,
                 () -> manager.refresh(sessionId, RefreshEngineSupport.providerMetadata(), dpopRefreshFlow,
@@ -141,16 +145,23 @@ class RefreshConstraintLifecycleSpecIT extends BaseIntegrationTest {
                         RefreshEngineSupport.clientAuthentication(configuration)),
                 "the plain-bearer coordinator must fail closed on a sender-constrained bundle");
 
-        assertAll("fail-closed coordinator refusal",
+        // Keycloak rotates the refresh token before the atomic store transform refuses the downgrade, so
+        // the token this client presented is already burned server-side. Restoring it would leave the
+        // caller holding a dead credential, so the refusal quarantines the session instead of preserving
+        // it — see TokenLifecycleManager#quarantineRejectedRotation.
+        assertAll("fail-closed coordinator refusal quarantines the rotated session",
                 () -> assertTrue(refusal.getMessage().contains("cnf binding"),
                         "the refusal must name the stale cnf binding it refused to preserve, was: "
                                 + refusal.getMessage()),
-                () -> assertEquals(Optional.of(acquiredBinding),
-                        manager.get(sessionId).flatMap(StoredToken::binding),
-                        "the refused refresh must leave the original bound bundle untouched"),
-                () -> assertEquals(Optional.of(stored.accessToken()),
-                        manager.get(sessionId).map(StoredToken::accessToken),
-                        "no refreshed material may be written when the transform refused"));
+                () -> assertEquals(Optional.empty(), manager.get(sessionId),
+                        "the refused rotation must quarantine the session: neither the refreshed material "
+                                + "nor the pre-refresh bundle the AS has already burned may survive it"),
+                () -> assertEquals(Optional.empty(),
+                        manager.refresh(sessionId, RefreshEngineSupport.providerMetadata(), dpopRefreshFlow,
+                                new RevocationClient(configuration), idBridge,
+                                RefreshEngineSupport.clientAuthentication(configuration)),
+                        "the quarantined session must hold nothing refreshable — the caller has to "
+                                + "re-authenticate rather than retry the refresh"));
     }
 
     /**
