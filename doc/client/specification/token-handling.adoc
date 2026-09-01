@@ -205,10 +205,12 @@ way it is stored or forwarded.
 A refresh that would apply no confirmed `cnf` binding to a sender-constrained bundle is therefore
 *refused* by the same atomic store transform that enforces the subject binding — the refusal is
 independent of what the authorization server returned, since the client cannot preserve a
-constraint it was not handed. The refused session is *not* left holding its previous bundle: by the
-time the transform refuses, the server has already rotated, so the session is quarantined on the
-terms described in <<_refresh_identity_binding>> and the caller must re-authenticate. Sender-constrained
-refresh is applied through the `applyRefresh` overload that carries the confirmed binding.
+constraint it was not handed. The refusal follows the same rotated-vs-not rule as the identity case
+(<<_refresh_identity_binding>>): when the authorization server had *already rotated* the refresh
+token before the refusal, the presented token is burned server-side, so the session is *quarantined*
+rather than preserved, forcing re-authentication. When the server did not rotate, the presented
+token is still valid and the untouched store entry stays usable. Sender-constrained refresh is
+applied through the `applyRefresh` overload that carries the confirmed binding.
 
 * Source: https://www.rfc-editor.org/rfc/rfc9449[RFC 9449], https://www.rfc-editor.org/rfc/rfc8705[RFC 8705].
 
