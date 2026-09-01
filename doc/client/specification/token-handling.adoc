@@ -241,8 +241,8 @@ the userinfo `sub` binding is enforced, rotation triggers family revocation on r
 sender-constraint survives a refresh (xref:../requirements.adoc#CLIENT-22[CLIENT-22]). The two
 refresh-path controls above are covered by *matched positive/negative pairs*, so deleting either
 guard turns a test red rather than merely leaving one green: a substituted-`sub` refresh is
-refused and the store asserted untouched while a matching-`sub` refresh is accepted and rotates
-the bundle; and the granted-scope matrix asserts each `scopeDelta` in *both* postures, including
+refused and the session asserted quarantined while a matching-`sub` refresh is accepted and
+rotates the bundle; and the granted-scope matrix asserts each `scopeDelta` in *both* postures, including
 the `ClientProtocolException` the strict posture raises on a broadened grant. Both are
 additionally proven against a real authorization server in the integration suite. The full
 unit + integration coverage and the `CLIENT-N` → threat → test traceability are specified in
