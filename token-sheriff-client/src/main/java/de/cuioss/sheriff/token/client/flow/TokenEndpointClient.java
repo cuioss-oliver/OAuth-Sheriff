@@ -87,8 +87,9 @@ public class TokenEndpointClient {
      * @param formParameters   the form-encoded request body parameters (e.g. {@code grant_type})
      * @param requestHeaders   additional request headers (e.g. an {@code Authorization} header)
      * @return the normalized token response
-     * @throws TransportException if the request fails, the response is not successful, or the body
-     *         cannot be parsed
+     * @throws TransportException if the request fails or the response is not successful; the
+     *         {@link RedeemedResponseException} subtype when the response was successful but its body
+     *         could not be parsed — see {@link #requestToken(String, Map, Map, SenderConstraint)}
      */
     public TokenResponse requestToken(String tokenEndpoint,
             Map<String, String> formParameters,
@@ -114,8 +115,11 @@ public class TokenEndpointClient {
      * @param senderConstraint the DPoP/mTLS sender-constraint to apply, or {@code null} for a plain
      *                         bearer-token request
      * @return the normalized token response
-     * @throws TransportException if the request fails, the response is not successful (after a nonce
-     *         retry where applicable), or the body cannot be parsed
+     * @throws TransportException if the request fails or the response is not successful (after a
+     *         nonce retry where applicable) — in both cases the authorization server never consumed
+     *         the presented grant. A body that cannot be parsed <em>after</em> a success status is
+     *         signalled by the {@link RedeemedResponseException} subtype instead, because by then the
+     *         server has already redeemed the grant and a caller may need to fail closed
      */
     public TokenResponse requestToken(String tokenEndpoint,
             Map<String, String> formParameters,
@@ -190,29 +194,35 @@ public class TokenEndpointClient {
         }
     }
 
+    // Every branch below runs only after HttpStatusFamily.isSuccess(...) held for the response, so the
+    // authorization server has already accepted the request and consumed the presented grant. Each
+    // therefore raises RedeemedResponseException — a TransportException subtype, so every existing
+    // caller and every documented @throws TransportException contract is unchanged — which is what
+    // lets a caller that must fail closed tell a post-redemption failure from a pre-redemption one.
+    //
     // java:S2589 — body is non-null by every current caller/handler wiring, but the guard is kept
     // (consistent with the equivalent parse() entry guards in UserInfoClient / ParClient) as
     // defensive resilience against a future change to the shared bounded body-handler.
     @SuppressWarnings("java:S2589")
     private TokenResponse parse(String body) {
         if (body == null || body.isBlank()) {
-            throw new TransportException("Empty token endpoint response");
+            throw new RedeemedResponseException("Empty token endpoint response");
         }
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > maxContentSize) {
-            throw new TransportException("Token endpoint response exceeds maximum allowed size of "
+            throw new RedeemedResponseException("Token endpoint response exceeds maximum allowed size of "
                     + maxContentSize + " bytes (" + BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN + ")");
         }
         try {
             TokenResponse tokenResponse = dslJson.deserialize(TokenResponse.class, bytes, bytes.length);
             if (tokenResponse == null || tokenResponse.accessToken == null) {
-                throw new TransportException("Token endpoint response is missing the access_token");
+                throw new RedeemedResponseException("Token endpoint response is missing the access_token");
             }
             if (!tokenResponse.hasRecognizedTokenType()) {
                 // RFC 6749 §5.1 makes token_type REQUIRED; a missing or unrecognized type must not be
                 // silently consumed as Bearer. tokenType is AS-controlled, so sanitize it (CWE-117)
                 // before it reaches the exception message on a plain-text appender path.
-                throw new TransportException("Token endpoint response has an unsupported token_type: "
+                throw new RedeemedResponseException("Token endpoint response has an unsupported token_type: "
                         + LogSanitizer.sanitize(tokenResponse.tokenType));
             }
             return tokenResponse;
@@ -221,7 +231,7 @@ public class TokenEndpointClient {
             // before it reaches the log appender or the exception message, matching the token_type site.
             String sanitizedError = LogSanitizer.sanitize(e.getMessage());
             LOGGER.debug("Failed to parse token endpoint response: %s", sanitizedError);
-            throw new TransportException("Failed to parse token endpoint response: " + sanitizedError, e);
+            throw new RedeemedResponseException("Failed to parse token endpoint response: " + sanitizedError, e);
         }
     }
 

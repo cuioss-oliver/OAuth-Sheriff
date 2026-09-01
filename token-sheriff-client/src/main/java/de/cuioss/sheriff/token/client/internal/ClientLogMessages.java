@@ -169,6 +169,18 @@ public final class ClientLogMessages {
                 .identifier(112)
                 .template("Refresh refused after the authorization server rotated the token for session '%s'; revoking the rotated token at the authorization server (RFC 7009) and clearing the store and rotation family")
                 .build();
+
+        /**
+         * The authorization server accepted the refresh request but its response could not be parsed,
+         * so whether it rotated the presented refresh token is unrecoverable. The session is
+         * quarantined fail-closed on the presumption that the presented token is burned; no
+         * revocation is attempted because no successor token is known.
+         */
+        public static final LogRecord REFRESH_REDEMPTION_UNVERIFIABLE_QUARANTINE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(113)
+                .template("Refresh response for session '%s' was unusable after the authorization server accepted the request; rotation is unrecoverable, so the presented token is presumed burned and the store and rotation family are cleared without revocation")
+                .build();
     }
 
     /**

@@ -19,11 +19,13 @@ import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.dpop.ConstraintBinding;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.flow.RefreshRedemption;
 import de.cuioss.sheriff.token.client.internal.ClientLogMessages;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.client.token.RefreshTokenFamily;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
+import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.tools.logging.CuiLogger;
@@ -44,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Orchestrates the server-side token lifecycle over a {@link TokenStore}: store, retrieve, proactive
@@ -68,6 +71,20 @@ import java.util.concurrent.ConcurrentMap;
  * credential the AS has already invalidated, turning a local refusal into a remote failure on the very
  * next refresh. A refusal on a <em>non-rotated</em> redemption needs none of this: the presented token
  * is still valid at the AS and the family was never advanced, so the untouched store entry stays usable.
+ * <p>
+ * <strong>The same fail-closed rule covers refusals raised inside the exchange itself.</strong>
+ * {@link RefreshFlow#refresh} can refuse after the authorization server has already answered — the
+ * freshly issued access token fails client-side validation, the granted scope is broader than
+ * requested under the opt-in strict posture, or the successful response cannot be parsed at all — and
+ * every one of those reaches {@link #refresh} before any {@link RotationResult} exists, so rotation
+ * cannot be read off a result. The discriminator is instead the
+ * {@link de.cuioss.sheriff.token.client.flow.RefreshRedemption} the flow reports once the server has
+ * answered: present means the presented token was redeemed and the session is quarantined, absent
+ * means the request never reached redemption — a connection failure, a DNS failure, a non-success
+ * status — so the presented token is still valid and the session is deliberately left intact rather
+ * than destroyed over a transient fault. An unparseable success response is the one redeemed case
+ * where rotation is not computable at all; it is presumed rotated and cleared, without inventing a
+ * successor to revoke.
  * <p>
  * <strong>Logout is fail-closed with no stale-read window.</strong> {@link #revokeAndClear} performs a
  * single atomic take-and-clear via {@link TokenStore#remove(String)}: after it returns, the session's
@@ -284,7 +301,15 @@ public class TokenLifecycleManager {
      * @return the refreshed stored bundle, or {@link Optional#empty()} when no refreshable bundle is
      *         held
      * @throws de.cuioss.sheriff.token.commons.error.ClientProtocolException if refresh-token reuse is
-     *                               detected (the family is revoked and the store cleared first)
+     *                               detected (the family is revoked and the store cleared first), or
+     *                               if the granted scope is broader than requested under the opt-in
+     *                               strict posture
+     * @throws de.cuioss.sheriff.token.commons.error.TokenSheriffException if the exchange itself is
+     *                               refused — the refreshed access token fails validation, the strict
+     *                               scope posture refuses the grant, or the token request fails. When
+     *                               the authorization server had already redeemed the presented token
+     *                               the session is quarantined first; when it had not, the stored
+     *                               bundle is left untouched because that token is still usable
      * @throws IllegalStateException if the refreshed ID token is inconsistent with the refreshed
      *                               access token, or if the refreshed access token names a principal
      *                               other than the one the session is bound to. When the authorization
@@ -333,7 +358,25 @@ public class TokenLifecycleManager {
             return Optional.empty();
         }
 
-        RotationResult rotation = refreshFlow.refresh(metadata, presentedRefreshToken);
+        // A refusal raised INSIDE the exchange — client-side access-token validation, the strict
+        // scope-reconciliation refusal, or a 2xx response whose body cannot be parsed — reaches the
+        // caller before any RotationResult exists, so rotation cannot be read off a result here. The
+        // redemption observer is the separate, earlier signal that closes that gap: RefreshFlow calls
+        // it only once the authorization server has answered successfully. Its ABSENCE is therefore
+        // the discriminator that must not be collapsed — an unset reference means the failure happened
+        // BEFORE redemption (connection failure, DNS failure, non-2xx), so the presented refresh token
+        // is still valid and clearing the session would destroy a working one over a transient fault.
+        AtomicReference<RefreshRedemption> redemption = new AtomicReference<>();
+        RotationResult rotation;
+        try {
+            rotation = refreshFlow.refresh(metadata, presentedRefreshToken, redemption::set);
+        } catch (TokenSheriffException refusedExchange) {
+            RefreshRedemption redeemed = redemption.get();
+            if (redeemed != null && redeemed.presentedTokenBurned()) {
+                quarantineRedeemedRefresh(sessionId, metadata, redeemed, revocationClient, clientAuthentication);
+            }
+            throw refusedExchange;
+        }
 
         // OIDC Core §12.2 consistency is checked BEFORE the family is advanced, so a refusal here can
         // never leave a half-applied rotation behind. What the refusal must do next depends on whether
@@ -419,22 +462,52 @@ public class TokenLifecycleManager {
     }
 
     /**
+     * Fails a session closed after the authorization server redeemed the presented refresh token but
+     * {@link RefreshFlow#refresh} then refused the exchange — the freshly issued access token failed
+     * client-side validation, the granted scope was broader than requested under the opt-in strict
+     * posture, or the successful response could not be parsed at all.
+     * <p>
+     * The disposition follows what is actually known about rotation, and never invents a token to
+     * revoke. When the authorization server issued a successor, that successor is revoked (RFC 7009)
+     * and the session cleared, exactly as the post-transform quarantine does. When the response was
+     * unparseable, no successor exists on this side and rotation is not computable even in principle:
+     * the presented token is presumed burned, so the store entry and rotation family are cleared, but
+     * no revocation is attempted because there is no token to name in it.
+     */
+    private void quarantineRedeemedRefresh(String sessionId, ProviderMetadata metadata,
+            RefreshRedemption redemption, RevocationClient revocationClient,
+            ClientAuthentication clientAuthentication) {
+        String rotatedToken = redemption.rotatedRefreshToken();
+        if (rotatedToken == null) {
+            LOGGER.warn(ClientLogMessages.WARN.REFRESH_REDEMPTION_UNVERIFIABLE_QUARANTINE,
+                    maskSessionId(sessionId));
+        } else {
+            LOGGER.warn(ClientLogMessages.WARN.REFRESH_IDENTITY_REJECTED_QUARANTINE, maskSessionId(sessionId));
+        }
+        revokeAndClearFailClosed(sessionId, metadata, rotatedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
      * Revokes {@code token} at the authorization server (best-effort) and clears the session's store
      * entry and rotation family, so the client-side fail-closed clear happens whether or not the AS
-     * revocation succeeds.
+     * revocation succeeds. A {@code null} {@code token} means no revocable credential is known — the
+     * clear still happens, and no revocation is attempted.
      */
-    private void revokeAndClearFailClosed(String sessionId, ProviderMetadata metadata, String token,
-            RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
-        metadata.getRevocationEndpoint().ifPresent(endpoint -> {
-            try {
-                revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
-            } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
-                // Revocation is best-effort: a failed AS revocation must not stop the client-side
-                // fail-closed store clear below, nor mask the original refusal to the caller.
-                LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
-                        revocationFailure.getMessage());
-            }
-        });
+    private void revokeAndClearFailClosed(String sessionId, ProviderMetadata metadata,
+            @Nullable String token, RevocationClient revocationClient,
+            ClientAuthentication clientAuthentication) {
+        if (token != null) {
+            metadata.getRevocationEndpoint().ifPresent(endpoint -> {
+                try {
+                    revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
+                } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
+                    // Revocation is best-effort: a failed AS revocation must not stop the client-side
+                    // fail-closed store clear below, nor mask the original refusal to the caller.
+                    LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
+                            revocationFailure.getMessage());
+                }
+            });
+        }
         tokenStore.remove(sessionId);
         families.remove(sessionId);
     }
