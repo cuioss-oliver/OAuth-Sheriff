@@ -331,6 +331,7 @@ public class TokenLifecycleManager {
         CompletableFuture<Optional<StoredToken>> mine = new CompletableFuture<>();
         CompletableFuture<Optional<StoredToken>> alreadyInFlight = inFlight.putIfAbsent(sessionId, mine);
         if (alreadyInFlight != null) {
+            onSingleFlightJoin(sessionId);
             return awaitInFlight(alreadyInFlight);
         }
         try {
@@ -344,6 +345,34 @@ public class TokenLifecycleManager {
         } finally {
             inFlight.remove(sessionId, mine);
         }
+    }
+
+    /**
+     * Observation point reached by a caller that has just <em>joined</em> an in-flight rotation — its
+     * {@code putIfAbsent} returned the leading caller's future — and is about to block on that future.
+     * The default implementation does nothing.
+     * <p>
+     * <strong>This hook is deliberately not dead code, and must not be removed as such.</strong> It
+     * exists so the single-flight invariant ("a concurrent caller joins the one rotation rather than
+     * redeeming the refresh token a second time") is <em>testable</em> without a timing assumption. The
+     * join path touches no collaborator a test can decorate: it reads the map and waits. Every signal
+     * available from outside — the leading caller reaching the token endpoint, the leading caller
+     * reaching the store — is a proxy that fires strictly <em>before</em> the join and therefore leaves
+     * a window in which the leading caller can finish and release its entry, letting the joining caller
+     * start a second redemption and turning the test flaky. Announcing the join itself, at the only
+     * point where "this caller has joined" is a fact rather than a prediction, closes that window with
+     * a real happens-before edge: the joining caller already holds the leading caller's future when the
+     * signal fires, so the rotation it joins cannot be missed no matter how the two threads are
+     * scheduled afterwards.
+     * <p>
+     * It carries no production behaviour and no production subclass overrides it. Implementations must
+     * not throw and must not block indefinitely — this runs on the joining caller's thread, inside the
+     * public {@link #refresh} call.
+     *
+     * @param sessionId the session whose in-flight rotation was joined; never {@code null}
+     */
+    protected void onSingleFlightJoin(String sessionId) {
+        // No-op by default: see the Javadoc above for why this observation point exists.
     }
 
     private Optional<StoredToken> doRefresh(String sessionId, ProviderMetadata metadata,

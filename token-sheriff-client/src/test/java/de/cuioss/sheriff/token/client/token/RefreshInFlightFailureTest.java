@@ -153,10 +153,15 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
         var revocationClient = new RecordingRevocationClient(config);
         ClientAuthentication clientAuth = clientAuth(config);
         var rendezvous = new SingleFlightRendezvousStore(new InMemoryTokenStore());
-        TokenLifecycleManager manager = new TokenLifecycleManager(rendezvous, new RefreshScheduler());
+        CountDownLatch joined = new CountDownLatch(1);
+        TokenLifecycleManager manager = new TokenLifecycleManager(rendezvous, new RefreshScheduler()) {
+            @Override
+            protected void onSingleFlightJoin(String sessionId) {
+                joined.countDown();
+            }
+        };
         String session = Generators.letterStrings(10, 20).next();
         manager.store(session, bearerBundle(Generators.letterStrings(20, 40).next(), null));
-        CountDownLatch joinerStarted = new CountDownLatch(1);
         getModuleDispatcher().returnOAuthError();
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -165,12 +170,14 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
                     () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth)));
             assertTrue(rendezvous.awaitRegistration(AWAIT_SECONDS, TimeUnit.SECONDS),
                     "the leading caller must register its single-flight entry");
-            Future<Class<?>> joiner = pool.submit(() -> {
-                joinerStarted.countDown();
-                return thrownBy(
-                        () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
-            });
-            assertTrue(joinerStarted.await(AWAIT_SECONDS, TimeUnit.SECONDS), "the joining caller must start");
+            Future<Class<?>> joiner = pool.submit(() -> thrownBy(
+                    () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth)));
+            // The join point itself, not a proxy for it: the hook fires only once the joining caller's
+            // putIfAbsent has returned the leading caller's future, so from here on the joining caller
+            // is holding that future and cannot start a redemption of its own — whatever the scheduler
+            // does with the two threads after the release below.
+            assertTrue(joined.await(AWAIT_SECONDS, TimeUnit.SECONDS),
+                    "the joining caller must reach the single-flight join point");
             rendezvous.releaseLeader();
 
             assertAll("both callers observe the one failure",
@@ -233,11 +240,12 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
      * {@link #releaseLeader()}, which is what guarantees the joining caller finds a rotation to join
      * rather than starting one of its own.
      * <p>
-     * This replaces an earlier spin on the dispatcher's call counter. That signal was both too late and
-     * too weak: it reported the leader having reached the token endpoint, and — because the leader was
-     * parked <em>inside</em> the endpoint — releasing it left only the response parse before the entry
-     * was removed again, a window the joining caller could lose. Parking at the store instead keeps the
-     * whole endpoint round trip ahead of the release, and removes the {@code sleep} the spin needed.
+     * This decorator only opens the window; it deliberately does not try to observe the joining caller
+     * arriving in it. Both earlier attempts did exactly that and stayed flaky, because every signal a
+     * decorated collaborator can offer — the dispatcher's call counter, this store's {@code retrieve} —
+     * fires strictly <em>before</em> the join and is therefore a prediction, not a fact. The join itself
+     * is announced by {@code TokenLifecycleManager.onSingleFlightJoin}, overridden in the test above;
+     * releasing the leader only after that hook has fired is what makes the case deterministic.
      */
     private static final class SingleFlightRendezvousStore implements TokenStore {
 
