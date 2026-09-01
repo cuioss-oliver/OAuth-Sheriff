@@ -46,7 +46,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Orchestrates the server-side token lifecycle over a {@link TokenStore}: store, retrieve, proactive
@@ -78,9 +77,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * requested under the opt-in strict posture, or the successful response cannot be parsed at all — and
  * every one of those reaches {@link #refresh} before any {@link RotationResult} exists, so rotation
  * cannot be read off a result. The discriminator is instead the
- * {@link de.cuioss.sheriff.token.client.flow.RefreshRedemption} the flow reports once the server has
- * answered: present means the presented token was redeemed and the session is quarantined, absent
- * means the request never reached redemption — a connection failure, a DNS failure, a non-success
+ * {@link de.cuioss.sheriff.token.client.flow.RefreshRedemption} the flow carries on every refusal it
+ * raises once the server has answered, read back through
+ * {@link RefreshFlow#redemptionOf(Throwable)}: present means the presented token was redeemed and the
+ * session is quarantined, absent means the request never reached redemption — a connection failure, a DNS failure, a non-success
  * status — so the presented token is still valid and the session is deliberately left intact rather
  * than destroyed over a transient fault. An unparseable success response is the one redeemed case
  * where rotation is not computable at all; it is presumed rotated and cleared, without inventing a
@@ -360,21 +360,20 @@ public class TokenLifecycleManager {
 
         // A refusal raised INSIDE the exchange — client-side access-token validation, the strict
         // scope-reconciliation refusal, or a 2xx response whose body cannot be parsed — reaches the
-        // caller before any RotationResult exists, so rotation cannot be read off a result here. The
-        // redemption observer is the separate, earlier signal that closes that gap: RefreshFlow calls
-        // it only once the authorization server has answered successfully. Its ABSENCE is therefore
-        // the discriminator that must not be collapsed — an unset reference means the failure happened
-        // BEFORE redemption (connection failure, DNS failure, non-2xx), so the presented refresh token
-        // is still valid and clearing the session would destroy a working one over a transient fault.
-        AtomicReference<RefreshRedemption> redemption = new AtomicReference<>();
+        // caller before any RotationResult exists, so rotation cannot be read off a result here. Every
+        // such refusal instead CARRIES the redemption state it was raised under, which
+        // RefreshFlow.redemptionOf reads back. Its ABSENCE is the discriminator that must not be
+        // collapsed — an empty result means the failure happened BEFORE redemption (connection
+        // failure, DNS failure, non-2xx), so the presented refresh token is still valid and clearing
+        // the session would destroy a working one over a transient fault.
         RotationResult rotation;
         try {
-            rotation = refreshFlow.refresh(metadata, presentedRefreshToken, redemption::set);
+            rotation = refreshFlow.refresh(metadata, presentedRefreshToken);
         } catch (TokenSheriffException refusedExchange) {
-            RefreshRedemption redeemed = redemption.get();
-            if (redeemed != null && redeemed.presentedTokenBurned()) {
-                quarantineRedeemedRefresh(sessionId, metadata, redeemed, revocationClient, clientAuthentication);
-            }
+            RefreshFlow.redemptionOf(refusedExchange)
+                    .filter(RefreshRedemption::presentedTokenBurned)
+                    .ifPresent(redeemed -> quarantineRedeemedRefresh(sessionId, metadata, redeemed,
+                            revocationClient, clientAuthentication));
             throw refusedExchange;
         }
 

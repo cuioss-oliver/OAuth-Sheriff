@@ -32,8 +32,8 @@ import java.io.Serial;
  * by then have been rotated and burned server-side, and because no {@code TokenResponse} is ever
  * constructed on this path, whether it was rotated is not computable from the client at all. Callers
  * that must fail closed therefore treat this exception as <strong>presumed redeemed</strong> — see
- * {@link RefreshFlow#refresh(de.cuioss.sheriff.token.client.discovery.ProviderMetadata, String,
- * java.util.function.Consumer)} and {@link RefreshRedemption#rotationUnknown()}.
+ * {@link RefreshFlow#redemptionOf(Throwable)}, which maps it to
+ * {@link RefreshRedemption#rotationUnknown()}.
  * <p>
  * It extends {@link TransportException} so every existing caller and every documented
  * {@code @throws TransportException} contract keeps holding unchanged; only a caller that needs the

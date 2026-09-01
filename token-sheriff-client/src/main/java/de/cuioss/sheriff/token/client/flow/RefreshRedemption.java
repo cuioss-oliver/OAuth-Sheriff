@@ -26,13 +26,12 @@ import java.util.Objects;
  * A {@link de.cuioss.sheriff.token.client.token.RotationResult} is only ever constructed on the
  * success path, so a caller that must fail
  * closed after a <em>post-redemption</em> refusal has no result to inspect. This value is the
- * separate, earlier signal: {@link RefreshFlow} hands it to the observer passed to
- * {@link RefreshFlow#refresh(de.cuioss.sheriff.token.client.discovery.ProviderMetadata, String,
- * java.util.function.Consumer)} as soon as the token endpoint has answered, before any client-side
- * check that could still refuse the exchange. Its absence is therefore just as meaningful as its
- * presence: an observer that was never called means the request failed <em>before</em> the
- * authorization server processed it (connection failure, DNS failure, non-success HTTP status), so
- * the presented refresh token is still valid and the session must not be quarantined.
+ * separate signal: {@link RefreshFlow} resolves it as soon as the token endpoint has answered and
+ * carries it on every refusal raised thereafter ({@link RedeemedRefreshFailure}), which
+ * {@link RefreshFlow#redemptionOf(Throwable)} reads back. Its absence is therefore just as meaningful
+ * as its presence: a failure carrying none means the request failed <em>before</em> the authorization
+ * server processed it (connection failure, DNS failure, non-success HTTP status), so the presented
+ * refresh token is still valid and the session must not be quarantined.
  * <p>
  * Three states are distinguished, and the third is not a variant of the first two:
  * <ul>

@@ -27,6 +27,7 @@ import de.cuioss.sheriff.token.client.token.TokenResponse;
 import de.cuioss.sheriff.token.client.token.TokenValidationBridge;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -36,8 +37,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
-import java.util.function.Consumer;
 
 /**
  * Drives the OAuth 2.0 {@code refresh_token} grant (RFC 6749 §6) with refresh-token rotation.
@@ -65,12 +66,16 @@ import java.util.function.Consumer;
  * Both the validation refusal and the strict-posture scope refusal are raised <em>after</em> the token
  * endpoint has answered, and therefore after the authorization server has redeemed and possibly
  * rotated the presented refresh token — as is an unparseable success response, where rotation cannot
- * be determined at all. A caller holding a session cannot tell from those exceptions whether the token
- * it still has stored is alive or dead, so
- * {@link #refresh(ProviderMetadata, String, java.util.function.Consumer)} reports a
- * {@link RefreshRedemption} the moment the server has answered, before any check that could still
- * refuse. A failure raised before that point never reports one, which is what keeps a transient
- * network fault from being mistaken for a burned credential.
+ * be determined at all. A caller holding a session cannot tell from the exception type alone whether
+ * the token it still has stored is alive or dead, so each of those refusals <em>carries</em> the
+ * {@link RefreshRedemption} it was raised under ({@link RedeemedRefreshFailure}), and
+ * {@link #redemptionOf(Throwable)} reads it back. A failure raised before that point carries none,
+ * which is what keeps a transient network fault from being mistaken for a burned credential.
+ * <p>
+ * The signal rides on the exception rather than on a separate observer argument deliberately:
+ * {@link #refresh(ProviderMetadata, String)} stays the one overridable entry point on this
+ * subclassable type, so a subclass that intercepts, instruments or stubs a refresh stays on the
+ * production path instead of silently becoming dead code.
  *
  * @since 1.0
  * @author Oliver Wolff
@@ -91,14 +96,6 @@ public class RefreshFlow {
 
     /** Splits a granted {@code scope} value on any run of whitespace. */
     private static final String SCOPE_SPLIT_PATTERN = "\\s+";
-
-    /**
-     * The observer installed by {@link #refresh(ProviderMetadata, String)}: a caller that did not ask
-     * for the redemption signal is not interested in it.
-     */
-    private static final Consumer<RefreshRedemption> IGNORE_REDEMPTION = redemption -> {
-        // The two-argument overload reports no redemption state.
-    };
 
     private final ClientConfiguration configuration;
     private final TokenEndpointClient tokenEndpointClient;
@@ -164,51 +161,9 @@ public class RefreshFlow {
      *         token fails validation
      * @throws ClientProtocolException if the granted scope is broader than the requested scope and
      *         {@code ClientConfiguration.strictScopeReconciliation} is enabled; never in the default
-     *         lenient posture
+     *         lenient posture — thrown as the {@link RedeemedScopeRefusalException} subtype
      */
     public RotationResult refresh(ProviderMetadata metadata, String refreshToken) {
-        return refresh(metadata, refreshToken, IGNORE_REDEMPTION);
-    }
-
-    /**
-     * Exchanges a refresh token as {@link #refresh(ProviderMetadata, String)} does, additionally
-     * reporting to {@code redemptionObserver} what the authorization server did to the presented
-     * refresh token — as soon as that is known, and independently of whether the exchange then
-     * succeeds.
-     * <p>
-     * <strong>Why the extra signal exists.</strong> Several client-side checks run <em>after</em> the
-     * authorization server has answered {@code 2xx} and therefore after it has consumed the presented
-     * refresh token and, per its own rotation policy, possibly burned it: access-token validation, and
-     * the strict scope-reconciliation refusal. Each of those throws before a {@link RotationResult}
-     * exists, so a caller holding a session cannot tell from the exception alone whether the token it
-     * still has stored is alive or dead. This overload closes that gap without changing the exception
-     * contract above: the observer has already been called by the time any such refusal is thrown.
-     * <p>
-     * <strong>The observer is called at most once, and only after redemption.</strong> A failure
-     * raised before the server processed the request — a connection failure, a DNS failure, an
-     * SSRF-blocked target, or a non-success HTTP status — never reaches it. An observer that was not
-     * called therefore means the presented refresh token is untouched and still valid, which is
-     * exactly what stops a transient network fault from destroying a working session. The one case
-     * where redemption happened but rotation is unrecoverable — a {@code 2xx} whose body cannot be
-     * parsed, so no {@link de.cuioss.sheriff.token.client.token.TokenResponse} is ever constructed —
-     * is reported as {@link RefreshRedemption#rotationUnknown()} and fails closed.
-     *
-     * @param metadata           the resolved provider metadata carrying the token endpoint; must not
-     *                           be {@code null}
-     * @param refreshToken       the refresh token to redeem; must not be {@code null} or blank
-     * @param redemptionObserver notified with the redemption state once the authorization server has
-     *                           answered successfully, before any client-side check that could still
-     *                           refuse the exchange; must not be {@code null}
-     * @return the rotation result, as {@link #refresh(ProviderMetadata, String)}
-     * @throws de.cuioss.sheriff.token.commons.error.TransportException if the token request fails
-     * @throws de.cuioss.sheriff.token.validation.exception.TokenValidationException if the returned
-     *         token fails validation
-     * @throws ClientProtocolException if the granted scope is broader than the requested scope and
-     *         {@code ClientConfiguration.strictScopeReconciliation} is enabled
-     */
-    public RotationResult refresh(ProviderMetadata metadata, String refreshToken,
-            Consumer<RefreshRedemption> redemptionObserver) {
-        Objects.requireNonNull(redemptionObserver, "redemptionObserver must not be null");
         Objects.requireNonNull(metadata, "metadata must not be null");
         Objects.requireNonNull(refreshToken, "refreshToken must not be null");
         if (refreshToken.isBlank()) {
@@ -227,36 +182,66 @@ public class RefreshFlow {
         Map<String, String> headers = new HashMap<>();
         clientAuthentication.decorate(form, headers);
 
-        TokenResponse tokenResponse;
-        try {
-            tokenResponse = tokenEndpointClient.requestToken(tokenEndpoint, form, headers, senderConstraint);
-        } catch (RedeemedResponseException unusableResponse) {
-            // The server answered 2xx — it redeemed the presented token — but the body is unusable, so
-            // its rotation decision is not recoverable here or anywhere else on the client. Report it
-            // as unknown so the caller fails closed on a presumed rotation rather than keeping a token
-            // that may already be dead. A pre-redemption failure carries no RedeemedResponseException
-            // and is deliberately left to propagate unreported, leaving the presented token in use.
-            redemptionObserver.accept(RefreshRedemption.rotationUnknown());
-            throw unusableResponse;
-        }
+        // A failure raised here that is NOT a RedeemedResponseException happened BEFORE the server
+        // processed the request (connection failure, DNS failure, SSRF-blocked target, non-2xx), so it
+        // carries no redemption state and the presented token is left in use. It is deliberately not
+        // caught: redemptionOf classifies it as pre-redemption by its type alone.
+        TokenResponse tokenResponse = tokenEndpointClient.requestToken(tokenEndpoint, form, headers,
+                senderConstraint);
 
-        // Rotation is resolved and reported BEFORE the client-side checks below, because each of them
-        // can refuse the exchange after the server has already burned the presented token.
+        // Rotation is resolved BEFORE the client-side checks below, because each of them can refuse the
+        // exchange after the server has already burned the presented token — and each therefore throws
+        // a RedeemedRefreshFailure carrying this state.
         String rotatedRefreshToken = resolveRefreshToken(refreshToken, tokenResponse.refreshToken);
         boolean rotated = !rotatedRefreshToken.equals(refreshToken);
-        redemptionObserver.accept(rotated
+        RefreshRedemption redemption = rotated
                 ? RefreshRedemption.rotated(rotatedRefreshToken)
-                : RefreshRedemption.notRotated());
+                : RefreshRedemption.notRotated();
 
-        AccessTokenContent accessToken = validationBridge.validateAccessToken(tokenResponse.accessToken);
+        AccessTokenContent accessToken;
+        try {
+            accessToken = validationBridge.validateAccessToken(tokenResponse.accessToken);
+        } catch (TokenValidationException refused) {
+            throw new RedeemedValidationRefusalException(refused, redemption);
+        }
         LOGGER.debug("Refreshed access token for client '%s' (rotated=%s)", configuration.getClientId(), rotated);
 
         String grantedScope = tokenResponse.getScope().orElse(null);
         ScopeDelta scopeDelta = classifyScopeDelta(grantedScope);
-        reportScopeDelta(scopeDelta, grantedScope);
+        reportScopeDelta(scopeDelta, grantedScope, redemption);
 
         return new RotationResult(accessToken, rotatedRefreshToken, tokenResponse.idToken,
                 tokenResponse.expiresIn, rotated, grantedScope, scopeDelta);
+    }
+
+    /**
+     * Classifies a failure raised by {@link #refresh(ProviderMetadata, String)} as having happened
+     * after the authorization server redeemed the presented refresh token, or before it.
+     * <p>
+     * This is the single place the pre-/post-redemption distinction is decided, and callers must use it
+     * rather than enumerate exception types: it folds in the one redeemed case that predates this
+     * mechanism and carries no state of its own — {@link RedeemedResponseException}, a {@code 2xx}
+     * whose body could not be parsed, where no {@link de.cuioss.sheriff.token.client.token.TokenResponse}
+     * is ever constructed and rotation is therefore not computable even in principle. That case maps to
+     * {@link RefreshRedemption#rotationUnknown()} and fails closed on a presumed rotation with no
+     * successor to revoke.
+     * <p>
+     * An empty result means the request never reached redemption, so the presented refresh token is
+     * untouched and still valid. Treating that as a redemption would destroy a working session over a
+     * transient network fault.
+     *
+     * @param failure the failure {@code refresh} raised; must not be {@code null}
+     * @return the redemption state, or {@link Optional#empty()} when the failure predates redemption
+     */
+    public static Optional<RefreshRedemption> redemptionOf(Throwable failure) {
+        Objects.requireNonNull(failure, "failure must not be null");
+        if (failure instanceof RedeemedRefreshFailure redeemed) {
+            return Optional.of(redeemed.redemption());
+        }
+        if (failure instanceof RedeemedResponseException) {
+            return Optional.of(RefreshRedemption.rotationUnknown());
+        }
+        return Optional.empty();
     }
 
     /**
@@ -306,9 +291,14 @@ public class RefreshFlow {
      *
      * @param scopeDelta   the reconciliation outcome
      * @param grantedScope the raw granted {@code scope} value, or {@code null} when the AS omitted it
-     * @throws ClientProtocolException when the grant is broadened and strict reconciliation is enabled
+     * @param redemption   what the authorization server did to the presented refresh token, carried on
+     *                     the refusal so the caller can fail the session closed
+     * @throws RedeemedScopeRefusalException when the grant is broadened and strict reconciliation is
+     *         enabled — a {@link ClientProtocolException} subtype, so the documented contract is
+     *         unchanged
      */
-    private void reportScopeDelta(ScopeDelta scopeDelta, @Nullable String grantedScope) {
+    private void reportScopeDelta(ScopeDelta scopeDelta, @Nullable String grantedScope,
+            RefreshRedemption redemption) {
         if (scopeDelta == ScopeDelta.EQUAL || scopeDelta == ScopeDelta.UNDECLARED) {
             return;
         }
@@ -319,10 +309,11 @@ public class RefreshFlow {
             return;
         }
         if (configuration.isStrictScopeReconciliation()) {
-            throw new ClientProtocolException(
+            throw new RedeemedScopeRefusalException(
                     "Authorization server granted a broader scope than requested on refresh; granted '"
                             + safeGranted + "', requested '" + requested
-                            + "'. Refused because strictScopeReconciliation is enabled.");
+                            + "'. Refused because strictScopeReconciliation is enabled.",
+                    redemption);
         }
         LOGGER.warn(ClientLogMessages.WARN.SCOPE_BROADENED, safeGranted, requested);
     }
