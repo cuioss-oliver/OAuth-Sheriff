@@ -335,10 +335,25 @@ public class TokenLifecycleManager {
 
         RotationResult rotation = refreshFlow.refresh(metadata, presentedRefreshToken);
 
-        // OIDC Core §12.2 consistency is checked BEFORE the family is advanced: an inconsistent
-        // refreshed ID token must be refused without mutating the rotation family or the store, so a
-        // later legitimate refresh is not poisoned into a false-reuse by a half-applied rotation.
-        String refreshedIdToken = verifiedRefreshedIdToken(rotation, idTokenValidationBridge);
+        // OIDC Core §12.2 consistency is checked BEFORE the family is advanced, so a refusal here can
+        // never leave a half-applied rotation behind. What the refusal must do next depends on whether
+        // the AS rotated: when it did not, the presented refresh token is still valid, so the refusal
+        // propagates with the family and the store left untouched. When it did, the AS has already
+        // burned the presented token, so keeping it would leave the session holding a dead credential —
+        // the same defect the post-transform quarantine below closes. The session is therefore
+        // quarantined fail-closed on the rotated successor. The family has not been advanced at this
+        // point, and quarantineRejectedRotation does not assume it was: it revokes the rotated token and
+        // clears both the store entry and the family unconditionally.
+        String refreshedIdToken;
+        try {
+            refreshedIdToken = verifiedRefreshedIdToken(rotation, idTokenValidationBridge);
+        } catch (IllegalStateException inconsistent) {
+            if (rotation.rotated()) {
+                quarantineRejectedRotation(sessionId, metadata, rotation.refreshToken(), revocationClient,
+                        clientAuthentication);
+            }
+            throw inconsistent;
+        }
 
         if (rotation.rotated()) {
             RefreshTokenFamily family = families.computeIfAbsent(sessionId,
@@ -386,10 +401,12 @@ public class TokenLifecycleManager {
     }
 
     /**
-     * Fails a session closed after the authorization server rotated the refresh token but the atomic
-     * store transform then refused the redemption on an identity or sender-constraint binding mismatch.
+     * Fails a session closed after the authorization server rotated the refresh token but the client
+     * then refused the redemption — either because the refreshed ID token is inconsistent with the
+     * refreshed access token (OIDC Core §12.2) or because the atomic store transform rejected an
+     * identity or sender-constraint binding mismatch.
      * <p>
-     * By the time the transform refuses, the AS has already issued {@code rotatedToken} and invalidated
+     * By the time either refusal fires, the AS has already issued {@code rotatedToken} and invalidated
      * the token this client presented, so there is no usable credential left to keep: restoring the
      * presented token would only hand the caller one the AS has burned. The refusal is a security event
      * on a token the AS just minted, so the rotated token is revoked at the AS (RFC 7009, best-effort)

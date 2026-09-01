@@ -41,8 +41,13 @@ import java.util.Objects;
  * <strong>anomaly reporting, not compliance enforcement</strong>: RFC 6749 §3.3 affirmatively permits
  * an authorization server to grant a scope other than the one requested, obliging it only to disclose
  * the result through the {@code scope} response parameter, and the resource server — not this client —
- * remains the enforcement point for an over-broad claim. A {@link ScopeDelta#BROADENED} outcome is
- * therefore surfaced for the calling application to act on, never presented as a protocol violation.
+ * remains the enforcement point for an over-broad claim. In the default lenient posture a
+ * {@link ScopeDelta#BROADENED} outcome is therefore surfaced for the calling application to act on,
+ * never presented as a protocol violation. The opt-in
+ * {@code ClientConfiguration.strictScopeReconciliation} posture is the deliberate exception: it
+ * refuses the broadened grant with a {@code ClientProtocolException} before a {@code RotationResult}
+ * is ever constructed, so a strict-mode caller never observes a {@link ScopeDelta#BROADENED}
+ * instance at all.
  *
  * @param accessToken               the validated access token content; never {@code null}
  * @param refreshToken              the refresh token to use on the next refresh; never {@code null}

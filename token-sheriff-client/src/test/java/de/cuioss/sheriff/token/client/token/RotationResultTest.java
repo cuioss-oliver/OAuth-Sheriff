@@ -71,10 +71,14 @@ class RotationResultTest {
     }
 
     @Test
-    @DisplayName("Should reject a null access token or a null refresh token")
+    @DisplayName("Should reject a null access token, a null refresh token or a null scope delta")
     void shouldRejectNullComponents() {
         AccessTokenContent accessToken = accessToken();
         String refreshToken = refreshToken();
+
+        var missingScopeDelta = assertThrows(NullPointerException.class,
+                () -> new RotationResult(accessToken, refreshToken, null, 300L, false, null, null),
+                "a rotation result without a scope reconciliation outcome must be rejected");
 
         assertAll("mandatory components",
                 () -> assertThrows(NullPointerException.class,
@@ -82,6 +86,8 @@ class RotationResultTest {
                         "a rotation result without a validated access token must be rejected"),
                 () -> assertThrows(NullPointerException.class,
                         () -> new RotationResult(accessToken, null, null, 300L, false, null, ScopeDelta.UNDECLARED),
-                        "a rotation result without a refresh token must be rejected"));
+                        "a rotation result without a refresh token must be rejected"),
+                () -> assertEquals("scopeDelta must not be null", missingScopeDelta.getMessage(),
+                        "the rejection must name the offending component"));
     }
 }

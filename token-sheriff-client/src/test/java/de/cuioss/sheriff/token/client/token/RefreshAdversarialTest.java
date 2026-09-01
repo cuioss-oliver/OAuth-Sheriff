@@ -194,7 +194,7 @@ class RefreshAdversarialTest extends RefreshTestSupport {
     }
 
     @Test
-    @DisplayName("Should refuse the refresh and keep the stored bundle when the refreshed ID token sub differs")
+    @DisplayName("Should refuse the refresh and quarantine the rotated session when the refreshed ID token sub differs")
     void shouldRejectInconsistentRefreshedIdToken(URIBuilder uriBuilder) {
         ClientConfiguration config = config();
         ProviderMetadata metadata = metadata(uriBuilder);
@@ -207,20 +207,25 @@ class RefreshAdversarialTest extends RefreshTestSupport {
         idHolder.withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(otherSubject));
         String session = Generators.letterStrings(10, 20).next();
         String rt1 = Generators.letterStrings(20, 40).next();
-        String originalIdToken = Generators.letterStrings(20, 40).next();
-        manager.store(session, bearerBundle(rt1, originalIdToken));
+        manager.store(session, bearerBundle(rt1, Generators.letterStrings(20, 40).next()));
+        // The AS rotates the refresh token, burning rt1 on its own side, and only then does the §12.2
+        // cross-check refuse the refreshed ID token. Keeping rt1 would leave the client holding a
+        // credential the AS has already invalidated, so the refusal must fail closed.
+        String rotatedToken = Generators.letterStrings(20, 40).next();
         getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(),
-                Generators.letterStrings(20, 40).next(), idHolder.getRawToken(), 300));
+                rotatedToken, idHolder.getRawToken(), 300));
         var clientAuth = clientAuth(config);
 
         assertThrows(IllegalStateException.class,
                 () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
 
-        assertAll("rejected refresh keeps the pre-refresh state",
-                () -> assertEquals(rt1, manager.get(session).orElseThrow().refreshToken(),
-                        "the pre-refresh token is kept when the refreshed ID token is refused"),
-                () -> assertEquals(originalIdToken, manager.get(session).orElseThrow().idToken(),
-                        "the pre-refresh ID token is not replaced by an inconsistent one"));
+        assertAll("the refused rotation is quarantined, not reverted",
+                () -> assertTrue(manager.get(session).isEmpty(),
+                        "the session is cleared rather than left holding the AS-burned rt1"),
+                () -> assertTrue(revocationClient.revoked(rotatedToken),
+                        "the AS-issued successor is revoked at the AS (RFC 7009)"),
+                () -> assertFalse(revocationClient.revoked(rt1),
+                        "the already-burned presented token is not what gets revoked"));
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
                 "inconsistent with the refreshed access token");
     }
@@ -330,20 +335,26 @@ class RefreshAdversarialTest extends RefreshTestSupport {
                 .build());
         String session = Generators.letterStrings(10, 20).next();
         String rt1 = Generators.letterStrings(20, 40).next();
-        String originalIdToken = Generators.letterStrings(20, 40).next();
-        manager.store(session, bearerBundle(rt1, originalIdToken));
+        manager.store(session, bearerBundle(rt1, Generators.letterStrings(20, 40).next()));
+        // The AS rotates the refresh token before the §12.2 'iss' cross-check refuses, so rt1 is already
+        // burned server-side: the session must fail closed rather than keep a dead credential.
+        String rotatedToken = Generators.letterStrings(20, 40).next();
         getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(),
-                Generators.letterStrings(20, 40).next(), idHolder.getRawToken(), 300));
+                rotatedToken, idHolder.getRawToken(), 300));
         var clientAuth = clientAuth(config);
 
         var thrown = assertThrows(IllegalStateException.class,
                 () -> manager.refresh(session, metadata, flow, revocationClient, crossIssuerBridge, clientAuth));
 
-        assertAll("cross-issuer refreshed ID token is refused",
+        assertAll("cross-issuer refreshed ID token is refused and the rotation quarantined",
                 () -> assertTrue(thrown.getMessage().contains("OIDC Core §12.2"),
                         "the refusal must name the §12.2 consistency check, not merely throw"),
-                () -> assertEquals(originalIdToken, manager.get(session).orElseThrow().idToken(),
-                        "the pre-refresh ID token is not replaced by a foreign-issuer one"));
+                () -> assertTrue(manager.get(session).isEmpty(),
+                        "the session is cleared rather than left holding the AS-burned rt1"),
+                () -> assertTrue(revocationClient.revoked(rotatedToken),
+                        "the AS-issued successor is revoked at the AS (RFC 7009)"),
+                () -> assertFalse(revocationClient.revoked(rt1),
+                        "the already-burned presented token is not what gets revoked"));
         LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
                 "inconsistent with the refreshed access token");
     }
