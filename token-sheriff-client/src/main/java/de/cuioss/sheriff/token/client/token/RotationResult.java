@@ -77,6 +77,12 @@ String grantedScope, ScopeDelta scopeDelta) {
      * actionable as a refusal, and only when the client has opted in via
      * {@code ClientConfiguration.strictScopeReconciliation}. In the default lenient posture every
      * outcome is accepted.
+     * <p>
+     * <strong>Mirrored in the specification.</strong> These four constants and their per-mode
+     * disposition are reproduced as the "full mode &times; outcome contract" table in
+     * {@code doc/client/specification/token-handling.adoc}. The table is hand-authored, not generated:
+     * adding, removing or renaming a constant here — or changing what a posture does with one —
+     * requires updating that table in the same change, or the specification goes silently stale.
      *
      * @since 1.0
      */

@@ -60,10 +60,14 @@ import java.util.concurrent.ConcurrentMap;
  * {@link StoredToken#refreshed} refuses the refresh when a session already bound to a subject is handed
  * a different one — so a refresh rotates credentials but never re-points a live session at another
  * user. Both checks run inside the same atomic transform, so neither opens a check-then-act window.
- * When the transform refuses a rotated redemption this way, {@link #doRefresh} reverts the
- * {@link de.cuioss.sheriff.token.client.token.RefreshTokenFamily}'s tentative advance to match: the
- * family and the (unchanged) store must agree on the current token, or the still-valid, still-stored
- * token would be misclassified as reuse — and revoked — on the caller's very next legitimate refresh.
+ * When the transform refuses a redemption the authorization server already <em>rotated</em>,
+ * {@link #doRefresh} fails the session closed: the presented token has been burned at the AS, so
+ * there is nothing left to keep using. The AS-issued successor is revoked (RFC 7009), and the store
+ * entry and the session's {@link de.cuioss.sheriff.token.client.token.RefreshTokenFamily} are cleared,
+ * forcing re-authentication. Restoring the presented token instead would leave the client holding a
+ * credential the AS has already invalidated, turning a local refusal into a remote failure on the very
+ * next refresh. A refusal on a <em>non-rotated</em> redemption needs none of this: the presented token
+ * is still valid at the AS and the family was never advanced, so the untouched store entry stays usable.
  * <p>
  * <strong>Logout is fail-closed with no stale-read window.</strong> {@link #revokeAndClear} performs a
  * single atomic take-and-clear via {@link TokenStore#remove(String)}: after it returns, the session's
@@ -283,7 +287,11 @@ public class TokenLifecycleManager {
      *                               detected (the family is revoked and the store cleared first)
      * @throws IllegalStateException if the refreshed ID token is inconsistent with the refreshed
      *                               access token, or if the refreshed access token names a principal
-     *                               other than the one the session is bound to
+     *                               other than the one the session is bound to. When the authorization
+     *                               server had already rotated the refresh token, the session is
+     *                               quarantined first — the rotated token is revoked (RFC 7009) and the
+     *                               store entry and rotation family are cleared — so the caller must
+     *                               re-authenticate rather than retry
      */
     public Optional<StoredToken> refresh(String sessionId, ProviderMetadata metadata,
             RefreshFlow refreshFlow, RevocationClient revocationClient,
@@ -332,9 +340,9 @@ public class TokenLifecycleManager {
         // later legitimate refresh is not poisoned into a false-reuse by a half-applied rotation.
         String refreshedIdToken = verifiedRefreshedIdToken(rotation, idTokenValidationBridge);
 
-        RefreshTokenFamily family = null;
         if (rotation.rotated()) {
-            family = families.computeIfAbsent(sessionId, key -> new RefreshTokenFamily(presentedRefreshToken));
+            RefreshTokenFamily family = families.computeIfAbsent(sessionId,
+                    key -> new RefreshTokenFamily(presentedRefreshToken));
             try {
                 family.rotate(presentedRefreshToken, rotation.refreshToken());
             } catch (ClientProtocolException reuse) {
@@ -353,18 +361,19 @@ public class TokenLifecycleManager {
         // validated access token the §12.2 consistency check above uses.
         String refreshedSubject = rotation.accessToken().getSubject().orElse(null);
 
-        // The family was already tentatively advanced above (it must be, so a reuse is caught before
-        // any store write happens at all). When the store write below is itself refused — the identity
-        // or sender-constraint binding check inside the atomic transform rejects this refresh — the
-        // store keeps the pre-refresh token untouched, so the family's advance must be undone or the
-        // next legitimate redemption of that still-stored token would be misclassified as reuse
-        // (CLIENT-5 self-lockout).
+        // When the store write below is refused — the identity or sender-constraint binding check
+        // inside the atomic transform rejects this refresh — the store keeps the pre-refresh token
+        // untouched. If the AS rotated, that pre-refresh token has nonetheless been burned server-side,
+        // so the session is quarantined fail-closed rather than left holding a dead credential. If the
+        // AS did not rotate, the presented token is still valid and the untouched store entry needs no
+        // further action.
         try {
             return applyRefresh(sessionId, rotation.accessToken().getRawToken(), rotation.refreshToken(),
                     refreshedExpiry, null, refreshedSubject, refreshedIdToken);
         } catch (IllegalStateException rejected) {
-            if (family != null) {
-                family.revertRotation(presentedRefreshToken, rotation.refreshToken());
+            if (rotation.rotated()) {
+                quarantineRejectedRotation(sessionId, metadata, rotation.refreshToken(), revocationClient,
+                        clientAuthentication);
             }
             throw rejected;
         }
@@ -373,13 +382,39 @@ public class TokenLifecycleManager {
     private void revokeReusedFamily(String sessionId, ProviderMetadata metadata, String reusedToken,
             RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
         LOGGER.warn(ClientLogMessages.WARN.REFRESH_REUSE_REVOCATION, maskSessionId(sessionId));
+        revokeAndClearFailClosed(sessionId, metadata, reusedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
+     * Fails a session closed after the authorization server rotated the refresh token but the atomic
+     * store transform then refused the redemption on an identity or sender-constraint binding mismatch.
+     * <p>
+     * By the time the transform refuses, the AS has already issued {@code rotatedToken} and invalidated
+     * the token this client presented, so there is no usable credential left to keep: restoring the
+     * presented token would only hand the caller one the AS has burned. The refusal is a security event
+     * on a token the AS just minted, so the rotated token is revoked at the AS (RFC 7009, best-effort)
+     * and both the store entry and the rotation family are dropped, forcing re-authentication.
+     */
+    private void quarantineRejectedRotation(String sessionId, ProviderMetadata metadata, String rotatedToken,
+            RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
+        LOGGER.warn(ClientLogMessages.WARN.REFRESH_IDENTITY_REJECTED_QUARANTINE, maskSessionId(sessionId));
+        revokeAndClearFailClosed(sessionId, metadata, rotatedToken, revocationClient, clientAuthentication);
+    }
+
+    /**
+     * Revokes {@code token} at the authorization server (best-effort) and clears the session's store
+     * entry and rotation family, so the client-side fail-closed clear happens whether or not the AS
+     * revocation succeeds.
+     */
+    private void revokeAndClearFailClosed(String sessionId, ProviderMetadata metadata, String token,
+            RevocationClient revocationClient, ClientAuthentication clientAuthentication) {
         metadata.getRevocationEndpoint().ifPresent(endpoint -> {
             try {
-                revocationClient.revoke(endpoint, reusedToken, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
+                revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
             } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
                 // Revocation is best-effort: a failed AS revocation must not stop the client-side
-                // fail-closed store clear below, nor mask the reuse signal to the caller.
-                LOGGER.debug(revocationFailure, "RFC 7009 revocation on detected reuse failed: %s",
+                // fail-closed store clear below, nor mask the original refusal to the caller.
+                LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
                         revocationFailure.getMessage());
             }
         });

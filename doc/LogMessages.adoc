@@ -205,7 +205,7 @@ This section documents log messages specific to the client engine (token-sheriff
 |TokenSheriffClient-002 |LOGOUT |Cleared held tokens for session '%s' as part of RP-initiated logout |Logged when held tokens for a session are cleared from the local store during RP-initiated logout (client-side store clear only; RFC 7009 revocation is performed separately)
 |===
 
-=== Client WARN Level (100-111)
+=== Client WARN Level (100-112)
 
 [cols="1,1,2,2", options="header"]
 |===
@@ -222,6 +222,7 @@ This section documents log messages specific to the client engine (token-sheriff
 |TokenSheriffClient-109 |TOKEN |Refreshed ID token is inconsistent with the refreshed access token (OIDC Core §12.2 'iss'/'sub'); refusing to apply the refresh |Logged when a refreshed ID token is inconsistent with the refreshed access token
 |TokenSheriffClient-110 |TOKEN |Authorization server granted a narrower scope than requested on refresh; granted '%s', requested '%s' |Logged when the scope granted on refresh is a strict subset of the requested scope; the refresh is accepted in both the lenient default and the opt-in strict posture
 |TokenSheriffClient-111 |TOKEN |Authorization server granted a broader scope than requested on refresh; granted '%s', requested '%s' |Logged when the scope granted on refresh contains a scope that was not requested; an anomaly report, not a violation notice — the refresh is accepted in the lenient default and refused only when `strictScopeReconciliation` is enabled
+|TokenSheriffClient-112 |LIFECYCLE |Refresh refused after the authorization server rotated the token for session '%s'; revoking the rotated token at the authorization server (RFC 7009) and clearing the store and rotation family |Logged when a refresh the authorization server already rotated is refused by the identity or sender-constraint binding check; the presented token is burned at the AS, so the session is quarantined fail-closed and must re-authenticate
 |===
 
 === Client ERROR Level (200)

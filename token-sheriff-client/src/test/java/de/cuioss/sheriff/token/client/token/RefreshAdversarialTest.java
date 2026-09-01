@@ -46,7 +46,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -65,9 +64,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * forward.
  * <p>
  * It also carries the matched control pair for the refresh-path identity binding: a refresh whose
- * access token substitutes the principal is refused and leaves the stored bundle intact, while a
- * refresh naming the bound principal is accepted and rotates it. The pair is matched by construction,
- * so deleting the guard turns the negative control red rather than leaving both green.
+ * access token substitutes the principal is refused and — because the authorization server has by then
+ * already rotated the presented refresh token — quarantines the session fail-closed, while a refresh
+ * naming the bound principal is accepted and rotates it. The pair is matched by construction, so
+ * deleting the guard turns the negative control red rather than leaving both green.
  */
 @EnableTestLogger
 @EnableGeneratorController
@@ -251,7 +251,7 @@ class RefreshAdversarialTest extends RefreshTestSupport {
     }
 
     @Test
-    @DisplayName("Should refuse the refresh and keep the stored bundle when the refreshed access token names another principal")
+    @DisplayName("Should refuse the refresh and quarantine the session when the refreshed access token names another principal")
     void shouldRefuseRefreshThatSubstitutesTheSubject(URIBuilder uriBuilder) {
         ClientConfiguration config = config();
         ProviderMetadata metadata = metadata(uriBuilder);
@@ -271,13 +271,15 @@ class RefreshAdversarialTest extends RefreshTestSupport {
         var thrown = assertThrows(IllegalStateException.class,
                 () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
 
+        // The mock response rotates the refresh token, so rt1 is burned at the AS before the identity
+        // check refuses: the session must fail closed. The quarantine mechanics themselves — the RFC
+        // 7009 revocation of the AS-issued successor and the clean re-authentication afterwards — are
+        // pinned by shouldQuarantineSessionOnPostRotationIdentityRejection, not re-asserted here.
         assertAll("substituted principal is refused before it reaches the store",
                 () -> assertTrue(thrown.getMessage().contains("refusing to re-point a live session at another subject"),
                         "the refusal must name the identity binding, not merely throw"),
-                () -> assertEquals(rt1, manager.get(session).orElseThrow().refreshToken(),
-                        "the pre-refresh bundle is kept when the refreshed principal differs"),
-                () -> assertEquals(boundSubject, manager.get(session).orElseThrow().subject(),
-                        "the session stays bound to its original principal"));
+                () -> assertTrue(manager.get(session).isEmpty(),
+                        "the refused session is quarantined, never left holding the AS-burned rt1"));
     }
 
     @Test
@@ -372,8 +374,8 @@ class RefreshAdversarialTest extends RefreshTestSupport {
     }
 
     @Test
-    @DisplayName("Should still accept the next legitimate refresh after a substituted-subject refusal rotated the family")
-    void shouldNotMisclassifyNextRefreshAsReuseAfterSubjectRefusal(URIBuilder uriBuilder) {
+    @DisplayName("Should quarantine the session when a refresh the AS already rotated is refused on identity")
+    void shouldQuarantineSessionOnPostRotationIdentityRejection(URIBuilder uriBuilder) {
         ClientConfiguration config = config();
         ProviderMetadata metadata = metadata(uriBuilder);
         RefreshFlow flow = refreshFlow(config);
@@ -384,38 +386,46 @@ class RefreshAdversarialTest extends RefreshTestSupport {
         String rt1 = Generators.letterStrings(20, 40).next();
         manager.store(session, boundBundle(rt1, boundSubject));
 
-        // First attempt: the AS rotates the refresh token, but the refreshed access token names a
-        // different principal. The refresh must be refused and the store must keep rt1 untouched.
+        // The AS rotates the refresh token — burning rt1 on its own side — and only then does the
+        // refreshed access token turn out to name a different principal. Restoring rt1 would leave the
+        // client holding a credential the AS has already invalidated, so the refusal must fail closed.
         accessHolder.withClaim(ClaimName.SUBJECT.getName(),
                 ClaimValue.forPlainString(boundSubject + Generators.letterStrings(3, 5).next()));
-        String rejectedRotatedToken = Generators.letterStrings(20, 40).next();
+        String rotatedToken = Generators.letterStrings(20, 40).next();
         getModuleDispatcher().respondWith(
-                TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rejectedRotatedToken, null, 300));
+                TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rotatedToken, null, 300));
         var clientAuth = clientAuth(config);
+
         assertThrows(IllegalStateException.class,
                 () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
-        assertEquals(rt1, manager.get(session).orElseThrow().refreshToken(),
-                "the store keeps rt1 after the identity-mismatch refusal");
 
-        // Second attempt: the legitimate caller retries with the still-stored rt1 (the only token it
-        // ever saw) and the AS now names the correct principal. Without the family revert, rt1 would
-        // already have been superseded by the first attempt's (rejected) rotation and this call would
-        // be misclassified as reuse, revoking the family and clearing a session that was never actually
-        // compromised.
+        assertAll("the refused rotation is quarantined, not reverted",
+                () -> assertTrue(manager.get(session).isEmpty(),
+                        "the session is cleared rather than left holding the AS-burned rt1"),
+                () -> assertTrue(revocationClient.revoked(rotatedToken),
+                        "the AS-issued successor is revoked at the AS (RFC 7009)"),
+                () -> assertFalse(revocationClient.revoked(rt1),
+                        "the already-burned presented token is not what gets revoked"));
+        LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                "clearing the store and rotation family");
+
+        // Re-authentication seeds a brand-new bundle for the same session id. No residual family state
+        // survives the quarantine, so its first legitimate rotation is not misclassified as reuse.
         accessHolder.withClaim(ClaimName.SUBJECT.getName(), ClaimValue.forPlainString(boundSubject));
         String rt2 = Generators.letterStrings(20, 40).next();
-        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rt2, null, 300));
+        String rt3 = Generators.letterStrings(20, 40).next();
+        manager.store(session, boundBundle(rt2, boundSubject));
+        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rt3, null, 300));
 
-        StoredToken refreshed = assertDoesNotThrow(
-                () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth(config)),
-                "the still-valid, still-stored rt1 must not be misclassified as reuse")
+        StoredToken reauthenticated = manager
+                .refresh(session, metadata, flow, revocationClient, idBridge, clientAuth(config))
                 .orElseThrow();
 
-        assertAll("legitimate retry succeeds",
-                () -> assertEquals(rt2, refreshed.refreshToken(), "the retry rotates to the AS-issued successor"),
-                () -> assertEquals(boundSubject, refreshed.subject(), "the bound principal survives the retry"),
-                () -> assertFalse(revocationClient.revokedAny(),
-                        "the legitimate retry must never trigger RFC 7009 revocation"));
+        assertAll("the re-authenticated session starts a fresh family",
+                () -> assertEquals(rt3, reauthenticated.refreshToken(),
+                        "the fresh bundle rotates normally after the quarantine"),
+                () -> assertEquals(boundSubject, reauthenticated.subject(),
+                        "the re-authenticated session is bound to its principal"));
     }
 
     /** A bundle bound to {@code subject}, so the refresh-path identity check has a baseline to enforce. */

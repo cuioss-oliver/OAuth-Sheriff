@@ -304,11 +304,32 @@ public class ClientConfiguration {
         }
     }
 
+    /**
+     * Validates that each configured entry is exactly one OAuth scope-token.
+     * <p>
+     * RFC 6749 §3.3 defines {@code scope} as a space-delimited list of individual scope-tokens, so a
+     * request joins the configured entries with a single space. An entry carrying embedded whitespace
+     * would go out as two or more scope-tokens while still counting as a single configured member,
+     * which leaves the requested set and the wire representation disagreeing: granted-scope
+     * reconciliation would then compare {@code {"read write"}} against the granted {@code {read,
+     * write}} and misreport an exactly-as-requested grant as broadened. Rejecting the entry here keeps
+     * the two in agreement, so no malformed scope list can reach the reconciliation logic at all.
+     *
+     * @param scopes the configured scopes; must not be {@code null} and must hold one scope-token per
+     *               entry
+     * @return an immutable copy of the validated scopes
+     * @throws IllegalArgumentException if an entry is blank or is not a single scope-token
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc6749#section-3.3">RFC 6749 §3.3</a>
+     */
     private static List<String> validateScopes(List<String> scopes) {
         Objects.requireNonNull(scopes, "scopes must not be null");
         for (String scope : scopes) {
             if (scope == null || scope.isBlank()) {
                 throw new IllegalArgumentException("scopes must not contain null or blank entries");
+            }
+            if (scope.codePoints().anyMatch(Character::isWhitespace)) {
+                throw new IllegalArgumentException(
+                        "scopes must hold one scope-token per entry (RFC 6749 §3.3), but was: " + scope);
             }
         }
         return List.copyOf(scopes);

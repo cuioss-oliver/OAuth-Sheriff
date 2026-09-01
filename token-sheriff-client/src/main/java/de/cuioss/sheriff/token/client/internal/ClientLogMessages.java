@@ -158,6 +158,17 @@ public final class ClientLogMessages {
                 .identifier(111)
                 .template("Authorization server granted a broader scope than requested on refresh; granted '%s', requested '%s'")
                 .build();
+
+        /**
+         * A refresh the authorization server had already rotated was refused by the identity or
+         * sender-constraint binding check; the session is quarantined fail-closed because the presented
+         * token is burned at the AS and the rotated one must not be kept.
+         */
+        public static final LogRecord REFRESH_IDENTITY_REJECTED_QUARANTINE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(112)
+                .template("Refresh refused after the authorization server rotated the token for session '%s'; revoking the rotated token at the authorization server (RFC 7009) and clearing the store and rotation family")
+                .build();
     }
 
     /**

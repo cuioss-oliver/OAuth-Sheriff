@@ -94,8 +94,15 @@ its own binding, closing that asymmetry:
 * On every refresh the `sub` of the *newly validated* access token is compared against the bound
   subject. The comparison is constant-time, matching the `SubBindingValidator` idiom used for the
   userinfo `sub` binding.
-* A *mismatch refuses the refresh fail-closed*: the stored bundle is left untouched rather than
-  overwritten, so a refused refresh cannot become a partial write.
+* A *mismatch refuses the refresh fail-closed*: the atomic store transform writes nothing, so a
+  refused refresh can never become a partial write.
+* When the authorization server had *already rotated* the refresh token before the mismatch was
+  detected, refusing is not enough — the presented token is burned at the server, so keeping it
+  would leave the client holding a dead credential that fails, or trips the server's own reuse
+  detection, on the next refresh. That case is therefore *quarantined*: the server-issued successor
+  is revoked (RFC 7009), and the store entry and rotation family are cleared, forcing
+  re-authentication. When the server returned no new refresh token (RFC 6749 §6 permits omitting
+  it), the presented token is still valid and the untouched store entry stays usable.
 * When the bundle carries *no* subject yet, the check is skipped and the refreshed subject is
   adopted — the binding takes effect from the first refresh that names a principal.
 * Where the authorization server also returns a refreshed ID token, it is validated through the
@@ -117,7 +124,11 @@ this client requested, and reports the outcome on `RotationResult`
 * `RotationResult.scopeDelta` — how the granted set relates to the requested set; never `null`.
 * `ClientConfiguration.strictScopeReconciliation` — opt-in, defaults to `false`.
 
-The full mode × outcome contract:
+The full mode × outcome contract. This table mirrors the `RotationResult.ScopeDelta` enum in
+`token-sheriff-client/src/main/java/de/cuioss/sheriff/token/client/token/RotationResult.java`, whose
+Javadoc points back here. It is hand-authored rather than generated, because each row carries
+per-posture behavioural prose an enum-name dump could not reproduce — so a constant added, removed
+or renamed there must be reflected here in the same change.
 
 [cols="1,3,2,2", options="header"]
 |===
