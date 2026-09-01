@@ -95,13 +95,15 @@ class RedeemedRefreshFailureTest {
     @DisplayName("Should reject a null redemption on either carrier rather than construct an unclassifiable failure")
     void shouldRejectNullRedemption() {
         var refusal = new TokenValidationException(ANY_EVENT, "refused");
+        // Hoisted so each assertThrows body holds exactly the one construction under test (java:S5778).
+        RefreshRedemption redemption = RefreshRedemption.notRotated();
         assertAll("a carrier without state would silently read as a pre-redemption failure",
                 () -> assertThrows(NullPointerException.class,
                         () -> new RedeemedValidationRefusalException(refusal, null)),
                 () -> assertThrows(NullPointerException.class,
                         () -> new RedeemedScopeRefusalException("refused", null)),
                 () -> assertThrows(NullPointerException.class,
-                        () -> new RedeemedValidationRefusalException(null, RefreshRedemption.notRotated())));
+                        () -> new RedeemedValidationRefusalException(null, redemption)));
     }
 
     @Test

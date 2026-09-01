@@ -35,6 +35,14 @@ import java.util.Objects;
  * @since 1.0
  * @author Oliver Wolff
  */
+// java:S110 — the inheritance depth is inherited wholesale from the library's existing exception
+// taxonomy (TokenValidationException and its ancestors); this type adds exactly one level to it.
+// The subtype relation is load-bearing for source compatibility: it is what lets the post-redemption
+// signal be added without touching a single existing catch block, assertThrows or documented
+// @throws, and it preserves the EventCategory-driven RFC 9457 mapping at an HTTP edge. Flattening
+// the hierarchy to satisfy a parent-count heuristic would break consumer catch
+// (TokenValidationException) blocks — a public API break this design exists to avoid.
+@SuppressWarnings("java:S110")
 public class RedeemedValidationRefusalException extends TokenValidationException
         implements RedeemedRefreshFailure {
 

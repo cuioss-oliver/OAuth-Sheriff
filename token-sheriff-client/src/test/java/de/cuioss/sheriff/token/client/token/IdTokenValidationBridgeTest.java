@@ -219,13 +219,15 @@ class IdTokenValidationBridgeTest {
         holder.withClaim(NONCE_CLAIM, ClaimValue.forPlainString(nonce));
         holder.withClaim(AT_HASH_CLAIM, ClaimValue.forPlainString(atHash(holder.getRawToken(), accessToken)));
         String rawToken = holder.getRawToken();
+        // Hoisted so the assertThrows body holds exactly the one call under test (java:S5778).
+        String foreignAccessToken = Generators.letterStrings(41, 60).next();
 
         IdTokenContent content = bridge.validateIdToken(rawToken, nonce, accessToken);
 
         assertAll("at_hash binding under " + algorithmLabel,
                 () -> assertNotNull(content, "a correctly bound at_hash must validate under " + algorithmLabel),
                 () -> assertThrows(ClientProtocolException.class,
-                        () -> bridge.validateIdToken(rawToken, nonce, Generators.letterStrings(41, 60).next()),
+                        () -> bridge.validateIdToken(rawToken, nonce, foreignAccessToken),
                         "a foreign access token must not satisfy the " + algorithmLabel + " at_hash binding"));
     }
 
@@ -250,6 +252,9 @@ class IdTokenValidationBridgeTest {
     void shouldValidateRefreshedIdTokenWithoutNonce() {
         holder.withoutClaim(NONCE_CLAIM);
         String rawToken = holder.getRawToken();
+        // Hoisted so the assertThrows body holds exactly the one call under test (java:S5778).
+        String tamperedToken = JwtTokenTamperingUtil.applyTamperingStrategy(rawToken,
+                JwtTokenTamperingUtil.TamperingStrategy.MODIFY_SIGNATURE_LAST_CHAR);
 
         IdTokenContent content = bridge.validateRefreshedIdToken(rawToken);
 
@@ -257,9 +262,7 @@ class IdTokenValidationBridgeTest {
                 () -> assertNotNull(content,
                         "a nonce-less refreshed ID token must validate — OIDC Core §12.2 says it SHOULD NOT carry one"),
                 () -> assertThrows(TokenValidationException.class,
-                        () -> bridge.validateRefreshedIdToken(
-                                JwtTokenTamperingUtil.applyTamperingStrategy(rawToken,
-                                        JwtTokenTamperingUtil.TamperingStrategy.MODIFY_SIGNATURE_LAST_CHAR)),
+                        () -> bridge.validateRefreshedIdToken(tamperedToken),
                         "skipping the nonce check must not skip pipeline validation"));
     }
 

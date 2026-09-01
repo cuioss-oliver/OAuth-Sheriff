@@ -42,6 +42,13 @@ import java.io.Serial;
  * @since 1.0
  * @author Oliver Wolff
  */
+// java:S110 — the inheritance depth is inherited wholesale from the library's existing exception
+// taxonomy (TransportException and its ancestors); this type adds exactly one level to it.
+// The subtype relation is load-bearing for source compatibility: it is what lets the post-redemption
+// signal be added without touching a single existing catch block, assertThrows or documented
+// @throws. Flattening the hierarchy to satisfy a parent-count heuristic would break consumer catch
+// (TransportException) blocks — a public API break this design exists to avoid.
+@SuppressWarnings("java:S110")
 public class RedeemedResponseException extends TransportException {
 
     @Serial

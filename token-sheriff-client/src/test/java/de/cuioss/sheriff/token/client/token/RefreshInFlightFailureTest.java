@@ -15,11 +15,15 @@
  */
 package de.cuioss.sheriff.token.client.token;
 
+import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.ProviderMetadata;
 import de.cuioss.sheriff.token.client.flow.RefreshFlow;
+import de.cuioss.sheriff.token.client.lifecycle.InMemoryTokenStore;
+import de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler;
 import de.cuioss.sheriff.token.client.lifecycle.StoredToken;
 import de.cuioss.sheriff.token.client.lifecycle.TokenLifecycleManager;
+import de.cuioss.sheriff.token.client.lifecycle.TokenStore;
 import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.test.dispatcher.TokenDispatcher;
 import de.cuioss.test.generator.Generators;
@@ -37,6 +41,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -145,28 +151,27 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
         ProviderMetadata metadata = metadata(uriBuilder);
         RefreshFlow flow = refreshFlow(config);
         var revocationClient = new RecordingRevocationClient(config);
-        TokenLifecycleManager manager = manager();
+        ClientAuthentication clientAuth = clientAuth(config);
+        var rendezvous = new SingleFlightRendezvousStore(new InMemoryTokenStore());
+        TokenLifecycleManager manager = new TokenLifecycleManager(rendezvous, new RefreshScheduler());
         String session = Generators.letterStrings(10, 20).next();
         manager.store(session, bearerBundle(Generators.letterStrings(20, 40).next(), null));
-        CountDownLatch redeemGate = new CountDownLatch(1);
         CountDownLatch joinerStarted = new CountDownLatch(1);
         getModuleDispatcher().returnOAuthError();
-        getModuleDispatcher().blockUntil(redeemGate);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
-            Future<Class<?>> leader = pool.submit(() -> {
-                return thrownBy(() -> manager.refresh(session, metadata, flow, revocationClient, idBridge,
-                        clientAuth(config)));
-            });
-            awaitLeaderInsideRedeem();
+            Future<Class<?>> leader = pool.submit(() -> thrownBy(
+                    () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth)));
+            assertTrue(rendezvous.awaitRegistration(AWAIT_SECONDS, TimeUnit.SECONDS),
+                    "the leading caller must register its single-flight entry");
             Future<Class<?>> joiner = pool.submit(() -> {
                 joinerStarted.countDown();
-                return thrownBy(() -> manager.refresh(session, metadata, flow, revocationClient, idBridge,
-                        clientAuth(config)));
+                return thrownBy(
+                        () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth));
             });
             assertTrue(joinerStarted.await(AWAIT_SECONDS, TimeUnit.SECONDS), "the joining caller must start");
-            redeemGate.countDown();
+            rendezvous.releaseLeader();
 
             assertAll("both callers observe the one failure",
                     () -> assertEquals(TransportException.class, leader.get(AWAIT_SECONDS, TimeUnit.SECONDS),
@@ -176,6 +181,7 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
                     () -> assertEquals(1, getModuleDispatcher().getCallCounter(),
                             "the joining caller must join the in-flight rotation, never redeem the token itself"));
         } finally {
+            rendezvous.releaseLeader();
             pool.shutdownNow();
         }
     }
@@ -217,14 +223,75 @@ class RefreshInFlightFailureTest extends RefreshTestSupport {
     }
 
     /**
-     * Blocks until the leading caller is inside the gated redeem, so the joining caller is guaranteed
-     * to find an in-flight rotation rather than starting one of its own.
+     * A {@link TokenStore} decorator that turns "the leading caller has registered its single-flight
+     * entry" into a latch the production path itself trips, so the concurrent case needs no timing
+     * assumption at all.
+     * <p>
+     * {@code TokenLifecycleManager.refresh} registers its in-flight entry <em>before</em> it delegates
+     * to the store, so the first {@link #retrieve(String)} is reached strictly after that registration.
+     * Announcing it there and parking the caller keeps the registration observably open until
+     * {@link #releaseLeader()}, which is what guarantees the joining caller finds a rotation to join
+     * rather than starting one of its own.
+     * <p>
+     * This replaces an earlier spin on the dispatcher's call counter. That signal was both too late and
+     * too weak: it reported the leader having reached the token endpoint, and — because the leader was
+     * parked <em>inside</em> the endpoint — releasing it left only the response parse before the entry
+     * was removed again, a window the joining caller could lose. Parking at the store instead keeps the
+     * whole endpoint round trip ahead of the release, and removes the {@code sleep} the spin needed.
      */
-    private void awaitLeaderInsideRedeem() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(AWAIT_SECONDS);
-        while (getModuleDispatcher().getCallCounter() < 1) {
-            assertTrue(System.nanoTime() < deadline, "the leading caller must reach the token endpoint");
-            TimeUnit.MILLISECONDS.sleep(5);
+    private static final class SingleFlightRendezvousStore implements TokenStore {
+
+        private final TokenStore delegate;
+        private final CountDownLatch registered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicBoolean leaderArrived = new AtomicBoolean();
+
+        SingleFlightRendezvousStore(TokenStore delegate) {
+            this.delegate = delegate;
+        }
+
+        /** Waits for the leading caller to have registered its single-flight entry. */
+        boolean awaitRegistration(long timeout, TimeUnit unit) throws InterruptedException {
+            return registered.await(timeout, unit);
+        }
+
+        /** Lets the parked leading caller proceed; idempotent, so the finally block may repeat it. */
+        void releaseLeader() {
+            release.countDown();
+        }
+
+        @Override
+        public Optional<StoredToken> retrieve(String sessionId) {
+            if (leaderArrived.compareAndSet(false, true)) {
+                registered.countDown();
+                awaitRelease();
+            }
+            return delegate.retrieve(sessionId);
+        }
+
+        @Override
+        public void store(String sessionId, StoredToken token) {
+            delegate.store(sessionId, token);
+        }
+
+        @Override
+        public Optional<StoredToken> remove(String sessionId) {
+            return delegate.remove(sessionId);
+        }
+
+        @Override
+        public Optional<StoredToken> update(String sessionId, UnaryOperator<StoredToken> updater) {
+            return delegate.update(sessionId, updater);
+        }
+
+        private void awaitRelease() {
+            try {
+                assertTrue(release.await(AWAIT_SECONDS, TimeUnit.SECONDS),
+                        "the test must release the parked leading caller");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while parking the leading caller", e);
+            }
         }
     }
 }
