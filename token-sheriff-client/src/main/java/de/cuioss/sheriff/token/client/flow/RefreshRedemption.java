@@ -57,7 +57,8 @@ import java.util.Objects;
  * @author Oliver Wolff
  * @see <a href="https://www.rfc-editor.org/rfc/rfc6749#section-6">RFC 6749 §6 - Refreshing an Access Token</a>
  */
-public record RefreshRedemption(@Nullable String rotatedRefreshToken, boolean rotationKnown) {
+public record RefreshRedemption(@Nullable
+    String rotatedRefreshToken, boolean rotationKnown) {
 
     /**
      * Rejects the two component pairings the type's own contract declares impossible, so no instance

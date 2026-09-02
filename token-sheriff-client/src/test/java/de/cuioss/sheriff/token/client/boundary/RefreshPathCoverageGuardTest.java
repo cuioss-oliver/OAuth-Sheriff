@@ -31,7 +31,6 @@ import org.w3c.dom.NodeList;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -213,7 +212,7 @@ class RefreshPathCoverageGuardTest {
             return fail("neither the 'basedir' nor the 'user.dir' system property is set,"
                     + " so the module pom cannot be located");
         }
-        return Paths.get(basedir).toAbsolutePath().normalize();
+        return Path.of(basedir).toAbsolutePath().normalize();
     }
 
     /**

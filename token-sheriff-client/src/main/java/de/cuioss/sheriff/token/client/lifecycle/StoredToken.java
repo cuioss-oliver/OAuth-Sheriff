@@ -61,9 +61,14 @@ import java.util.Optional;
  * @since 1.0
  * @author Oliver Wolff
  */
-public record StoredToken(String accessToken, @Nullable String refreshToken, @Nullable String idToken,
-        @Nullable ConstraintBinding constraintBinding, @Nullable Instant expiresAt,
-        @Nullable String subject) {
+public record StoredToken(String accessToken, @Nullable
+    String refreshToken, @Nullable
+    String idToken,
+@Nullable
+    ConstraintBinding constraintBinding, @Nullable
+    Instant expiresAt,
+@Nullable
+    String subject) {
 
     /**
      * @param accessToken       the raw access token; must not be {@code null} or blank
