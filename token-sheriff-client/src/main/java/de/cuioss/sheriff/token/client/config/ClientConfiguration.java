@@ -280,10 +280,11 @@ public class ClientConfiguration {
         this.connectTimeoutSeconds = requirePositive(connectTimeoutSeconds, "connectTimeoutSeconds");
         this.readTimeoutSeconds = requirePositive(readTimeoutSeconds, "readTimeoutSeconds");
         this.discoveryDocumentMaxSize = requirePositive(discoveryDocumentMaxSize, "discoveryDocumentMaxSize");
-        // Fail fast here rather than at the first token exchange: BackChannelHttp.validatedHandler()
-        // applies sslContext inside a catch (IllegalArgumentException e) that rewraps as
-        // TransportException, so without this guard an incompatible configuration would build cleanly
-        // and later surface as a transport failure rather than the configuration error it is.
+        // Fail fast here rather than at the first token exchange. BackChannelHttp's validatedHandler
+        // applies a caller-supplied sslContext inside an exception handler that rewraps the failure
+        // as a TransportException, so without this guard an incompatible configuration would build
+        // cleanly and only surface later as a transport failure rather than the configuration error
+        // it actually is.
         if (sslContext != null && !verifyHostname) {
             throw new IllegalArgumentException(
                     "verifyHostname(false) cannot be combined with sslContext(...). The hostname relaxation applies "
