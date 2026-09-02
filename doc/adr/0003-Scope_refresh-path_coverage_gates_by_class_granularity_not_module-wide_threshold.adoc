@@ -98,10 +98,11 @@ so responds to coverage removed from lines the change never touched. Neither sub
   directions — an *inert* entry (a listed FQCN binding to no class) and a *missing* sibling (a
   refresh-path class absent from the list).
 +
-Accepted residual risk: the missing-sibling leg derives its expected set from the refresh-path
-naming shape within the guarded packages, so a refresh-path class named outside that shape *and*
-placed in a package outside the guarded set still escapes it and must be added by hand. The
-inert-entry leg is unaffected and catches every non-binding entry.
+Accepted residual risk: the missing-sibling leg demands a class only when its package is one of the
+guarded packages *and* its first camel-case word is one the list already uses, so a refresh-path
+class escapes it as soon as *either* condition fails on its own — an unmatched name inside a
+guarded package escapes just as surely as a matched name outside the guarded packages — and must be
+added by hand. The inert-entry leg is unaffected and catches every non-binding entry.
 * An entry that stops matching any real class (a rename, a package move, a misspelling) makes the
   rule evaluate against **zero classes and report success** rather than error — JaCoCo's
   `BundleChecker` simply never invokes a limit, and `jacoco:check` logs

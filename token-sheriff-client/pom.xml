@@ -288,10 +288,12 @@
                      class that exists but was never added here. An edit to this block therefore can no
                      longer silently produce a false green.
 
-                     Accepted residual risk: leg (b) derives the expected set from the refresh-path
-                     naming shape within the guarded packages. A refresh-path class named outside that
-                     shape AND placed in a package outside the guarded set still escapes leg (b) and must
-                     be added here by hand. Leg (a) is unaffected — it catches every inert entry. -->
+                     Accepted residual risk: leg (b) demands a class only when its package is one of the
+                     guarded packages AND its first camel-case word is one the list already uses. A
+                     refresh-path class therefore escapes leg (b) as soon as EITHER condition fails on
+                     its own — an unmatched name inside a guarded package escapes just as surely as a
+                     matched name outside the guarded packages — and must be added here by hand. Leg (a)
+                     is unaffected — it catches every inert entry. -->
                 <executions>
                     <execution>
                         <id>refresh-path-coverage-check</id>

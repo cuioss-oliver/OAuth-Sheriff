@@ -60,15 +60,18 @@ import static org.junit.jupiter.api.Assertions.fail;
  *       word equals one the list already uses — is present in the list.</li>
  * </ul>
  * Leg (b)'s expected set is derived from the list's own shape, so it detects a sibling added beside
- * an already-guarded class. A refresh-path class named outside that shape <em>and</em> placed in a
- * package the list does not name is the accepted residual gap (see ADR-0003); leg (a) is unaffected
- * by it.
+ * an already-guarded class. Because leg (b) demands both conditions together, a class escapes it as
+ * soon as <em>either</em> one fails on its own: a refresh-path class named outside that shape,
+ * <em>or</em> placed in a package the list does not name, is the accepted residual gap (see
+ * ADR-0003); leg (a) is unaffected by it.
  */
 @DisplayName("Refresh-path coverage gate: the include list is neither inert nor drifted")
 class RefreshPathCoverageGuardTest {
 
     private static final String EXECUTION_ID = "refresh-path-coverage-check";
     private static final String PRODUCTION_ROOT_PACKAGE = "de.cuioss.sheriff.token.client";
+    private static final String JACOCO_GROUP_ID = "org.jacoco";
+    private static final String JACOCO_ARTIFACT_ID = "jacoco-maven-plugin";
 
     /** The {@code <include>} entries of the guarded execution, in pom order. */
     private static List<String> includeEntries;
@@ -163,7 +166,21 @@ class RefreshPathCoverageGuardTest {
     }
 
     /**
-     * @return the {@code <include>} texts of the {@link #EXECUTION_ID} execution, in document order
+     * Resolves the guarded execution strictly along the element chain
+     * {@code project/build/plugins/plugin[org.jacoco:jacoco-maven-plugin]/executions/execution}, matches
+     * it by a <em>direct child</em> {@code <id>}, and reads the {@code <include>} entries of that
+     * execution's own rules only.
+     * <p>
+     * Every hop is a direct-child lookup on purpose. A document-wide
+     * {@code getElementsByTagName("execution")} search binds to whichever element happens to come first
+     * in document order, so a second plugin declaring the same execution id, a {@code <pluginManagement>}
+     * declaration, or a nested {@code <id>} belonging to some unrelated element would silently retarget
+     * this guard at the wrong include list — it would then validate something else and still report
+     * success. Scoping removes that failure mode structurally.
+     *
+     * @return the {@code <include>} texts of the {@link #EXECUTION_ID} execution, in document order, or
+     *         an empty list when the plugin, the execution, or its rules cannot be resolved — which
+     *         {@link #shouldExtractANonEmptyIncludeList()} turns into a build failure
      */
     private static List<String> readIncludeEntries(Path pom) throws Exception {
         assertTrue(Files.isRegularFile(pom), "module pom not found at " + pom);
@@ -175,28 +192,72 @@ class RefreshPathCoverageGuardTest {
         factory.setExpandEntityReferences(false);
 
         Document document = factory.newDocumentBuilder().parse(pom.toFile());
-        NodeList executions = document.getElementsByTagName("execution");
-        for (int i = 0; i < executions.getLength(); i++) {
-            Element execution = (Element) executions.item(i);
-            if (EXECUTION_ID.equals(firstChildText(execution, "id"))) {
-                return textsOf(execution.getElementsByTagName("include"));
+        return firstChildElement(document.getDocumentElement(), "build")
+                .flatMap(build -> firstChildElement(build, "plugins"))
+                .flatMap(RefreshPathCoverageGuardTest::jacocoPlugin)
+                .flatMap(plugin -> firstChildElement(plugin, "executions"))
+                .flatMap(RefreshPathCoverageGuardTest::guardedExecution)
+                .map(RefreshPathCoverageGuardTest::ruleIncludesOf)
+                .orElseGet(List::of);
+    }
+
+    /** @return the {@code <plugin>} child declaring {@value #JACOCO_GROUP_ID}:{@value #JACOCO_ARTIFACT_ID} */
+    private static Optional<Element> jacocoPlugin(Element plugins) {
+        return childElements(plugins, "plugin").stream()
+                .filter(plugin -> JACOCO_GROUP_ID.equals(directChildText(plugin, "groupId")))
+                .filter(plugin -> JACOCO_ARTIFACT_ID.equals(directChildText(plugin, "artifactId")))
+                .findFirst();
+    }
+
+    /** @return the {@code <execution>} child whose direct-child {@code <id>} is {@link #EXECUTION_ID} */
+    private static Optional<Element> guardedExecution(Element executions) {
+        return childElements(executions, "execution").stream()
+                .filter(execution -> EXECUTION_ID.equals(directChildText(execution, "id")))
+                .findFirst();
+    }
+
+    /**
+     * @return the {@code <include>} texts reachable from the execution's own
+     *         {@code configuration/rules/rule/includes} chain, in document order
+     */
+    private static List<String> ruleIncludesOf(Element execution) {
+        List<String> includes = new ArrayList<>();
+        for (Element configuration : childElements(execution, "configuration")) {
+            for (Element rules : childElements(configuration, "rules")) {
+                for (Element rule : childElements(rules, "rule")) {
+                    for (Element includesElement : childElements(rule, "includes")) {
+                        for (Element include : childElements(includesElement, "include")) {
+                            includes.add(include.getTextContent().trim());
+                        }
+                    }
+                }
             }
         }
-        return List.of();
+        return includes;
     }
 
-    private static String firstChildText(Element parent, String tagName) {
-        NodeList matches = parent.getElementsByTagName(tagName);
-        return matches.getLength() == 0 ? null : matches.item(0).getTextContent().trim();
-    }
-
-    private static List<String> textsOf(NodeList nodes) {
-        List<String> texts = new ArrayList<>(nodes.getLength());
+    /** @return the DIRECT child elements of {@code parent} named {@code tagName}, in document order */
+    private static List<Element> childElements(Element parent, String tagName) {
+        List<Element> children = new ArrayList<>();
+        NodeList nodes = parent.getChildNodes();
         for (int i = 0; i < nodes.getLength(); i++) {
             Node node = nodes.item(i);
-            texts.add(node.getTextContent().trim());
+            if (node.getNodeType() == Node.ELEMENT_NODE && tagName.equals(node.getNodeName())) {
+                children.add((Element) node);
+            }
         }
-        return texts;
+        return children;
+    }
+
+    private static Optional<Element> firstChildElement(Element parent, String tagName) {
+        return childElements(parent, tagName).stream().findFirst();
+    }
+
+    /** @return the trimmed text of the first DIRECT child named {@code tagName}, or {@code null} */
+    private static String directChildText(Element parent, String tagName) {
+        return firstChildElement(parent, tagName)
+                .map(child -> child.getTextContent().trim())
+                .orElse(null);
     }
 
     /**
