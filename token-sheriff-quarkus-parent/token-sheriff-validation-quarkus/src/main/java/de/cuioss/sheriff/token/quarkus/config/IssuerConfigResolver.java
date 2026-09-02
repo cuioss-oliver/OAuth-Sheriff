@@ -503,8 +503,14 @@ public class IssuerConfigResolver {
      * <p>
      * Uses builder defaults for optional values, letting the builder handle validation.
      * </p>
+     * <p>
+     * Package-private rather than private so tests can assert the transport settings on the
+     * returned configuration directly: {@link IssuerConfig} keeps no accessor for the
+     * {@link HttpJwksLoaderConfig} it is built from, so the settings threaded in here are not
+     * observable through {@link #resolveIssuerConfigs()}.
+     * </p>
      */
-    private HttpJwksLoaderConfig createHttpJwksLoaderConfig(String issuerName, @Nullable String jwksUrl,
+    HttpJwksLoaderConfig createHttpJwksLoaderConfig(String issuerName, @Nullable String jwksUrl,
             @Nullable String wellKnownUrl, Optional<String> resolvedIssuerIdentifier) {
         HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder builder = HttpJwksLoaderConfig.builder();
 
@@ -532,6 +538,18 @@ public class IssuerConfigResolver {
         if (allowInsecureHttp) {
             builder.allowInsecureHttp(true);
             LOGGER.debug("Enabled cleartext HTTP for %s (allow-insecure-http=true)", issuerName);
+        }
+
+        // Inverted polarity relative to the opt-ins above: hostname verification is ON by default,
+        // so this is an opt-OUT. Only an explicit "false" touches the builder — leaving it untouched
+        // on the default path keeps the upstream HttpJwksLoaderConfigBuilder default authoritative.
+        boolean verifyHostname = config.getOptionalValue(
+                JwtPropertyKeys.ISSUERS.VERIFY_HOSTNAME.formatted(issuerName),
+                Boolean.class
+        ).orElse(true);
+        if (!verifyHostname) {
+            builder.verifyHostname(false);
+            LOGGER.debug("Disabled TLS hostname verification for %s (verify-hostname=false)", issuerName);
         }
 
         boolean allowLoopbackEgress = config.getOptionalValue(

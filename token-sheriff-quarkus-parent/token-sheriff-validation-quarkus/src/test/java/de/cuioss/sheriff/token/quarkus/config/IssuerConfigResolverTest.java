@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.token.quarkus.config;
 
 import de.cuioss.http.client.adapter.RetryConfig;
+import de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig;
 import de.cuioss.sheriff.token.commons.transport.ParserConfig;
 import de.cuioss.sheriff.token.quarkus.test.TestConfig;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
@@ -31,6 +32,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.INFO;
 import static de.cuioss.test.juli.LogAsserts.assertLogMessagePresent;
@@ -829,6 +831,51 @@ class IssuerConfigResolverTest {
                     "Should have JWKS loader when egress hosts are allow-listed");
             assertLogMessagePresentContaining(TestLogLevel.DEBUG,
                     "Allow-listed egress hosts for " + TEST_ISSUER);
+        }
+
+        /**
+         * Negative control of the verify-hostname matched pair. Unlike its sibling opt-ins,
+         * verify-hostname defaults to ON, so the resolver reads it with {@code .orElse(true)}.
+         * Copying the sibling {@code .orElse(false)} shape would silently disable hostname
+         * verification by default; this assertion is what turns that inversion red.
+         */
+        @Test
+        @DisplayName("should keep hostname verification enforced when verify-hostname is unset")
+        void shouldVerifyHostnameByDefault() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(TEST_ISSUER), "true",
+                    JwtPropertyKeys.ISSUERS.ISSUER_IDENTIFIER.formatted(TEST_ISSUER), "https://example.com",
+                    JwtPropertyKeys.ISSUERS.JWKS_URL.formatted(TEST_ISSUER), "https://example.com/jwks",
+                    JwtPropertyKeys.ISSUERS.AUDIENCE_VALIDATION_DISABLED.formatted(TEST_ISSUER), "true"
+            ));
+            IssuerConfigResolver resolver = new IssuerConfigResolver(config, RetryConfig.defaults(), null, null);
+
+            HttpJwksLoaderConfig httpConfig = resolver.createHttpJwksLoaderConfig(
+                    TEST_ISSUER, "https://example.com/jwks", null, Optional.of("https://example.com"));
+
+            assertTrue(httpConfig.getHttpHandler().isVerifyHostname(),
+                    "Omitting verify-hostname must leave TLS hostname verification enforced");
+        }
+
+        @Test
+        @DisplayName("should relax hostname verification when verify-hostname=false")
+        void shouldDisableHostnameVerificationWhenOptedOut() {
+            TestConfig config = new TestConfig(Map.of(
+                    JwtPropertyKeys.ISSUERS.ENABLED.formatted(TEST_ISSUER), "true",
+                    JwtPropertyKeys.ISSUERS.ISSUER_IDENTIFIER.formatted(TEST_ISSUER), "https://example.com",
+                    JwtPropertyKeys.ISSUERS.JWKS_URL.formatted(TEST_ISSUER), "https://example.com/jwks",
+                    JwtPropertyKeys.ISSUERS.VERIFY_HOSTNAME.formatted(TEST_ISSUER), "false",
+                    JwtPropertyKeys.ISSUERS.AUDIENCE_VALIDATION_DISABLED.formatted(TEST_ISSUER), "true"
+            ));
+            IssuerConfigResolver resolver = new IssuerConfigResolver(config, RetryConfig.defaults(), null, null);
+
+            HttpJwksLoaderConfig httpConfig = resolver.createHttpJwksLoaderConfig(
+                    TEST_ISSUER, "https://example.com/jwks", null, Optional.of("https://example.com"));
+
+            assertFalse(httpConfig.getHttpHandler().isVerifyHostname(),
+                    "verify-hostname=false must reach the built JWKS HttpHandler");
+            assertLogMessagePresentContaining(TestLogLevel.DEBUG,
+                    "Disabled TLS hostname verification for " + TEST_ISSUER);
         }
     }
 
