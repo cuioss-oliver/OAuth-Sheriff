@@ -57,7 +57,6 @@ import java.util.Objects;
  * @author Oliver Wolff
  * @see <a href="https://www.rfc-editor.org/rfc/rfc6749#section-6">RFC 6749 §6 - Refreshing an Access Token</a>
  */
-// cui-rewrite:disable AnnotationNewlineFormat
 public record RefreshRedemption(@Nullable String rotatedRefreshToken, boolean rotationKnown) {
 
     /**

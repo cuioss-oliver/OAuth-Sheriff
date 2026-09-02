@@ -61,7 +61,6 @@ import java.util.Optional;
  * @since 1.0
  * @author Oliver Wolff
  */
-// cui-rewrite:disable AnnotationNewlineFormat
 public record StoredToken(String accessToken, @Nullable String refreshToken, @Nullable String idToken,
 @Nullable ConstraintBinding constraintBinding, @Nullable Instant expiresAt,
 @Nullable String subject) {
