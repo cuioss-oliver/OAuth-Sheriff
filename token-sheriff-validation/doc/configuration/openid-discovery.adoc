@@ -74,6 +74,32 @@ HttpJwksLoaderConfig jwksConfig = HttpJwksLoaderConfig.builder()
     .build();
 ----
 
+For a local or containerised issuer reached by a name its certificate was never issued for, hostname
+matching can be relaxed on its own. This is a *separate* configuration — it deliberately does not
+supply `sslContext`, because the two cannot be combined:
+
+[source,java]
+----
+HttpJwksLoaderConfig jwksConfig = HttpJwksLoaderConfig.builder()
+    .wellKnownUrl("https://keycloak:8443/.well-known/openid-configuration")
+    .refreshIntervalSeconds(300)
+    .connectTimeoutSeconds(30)
+    .readTimeoutSeconds(60)
+    .verifyHostname(false)    // Local/dev only — see the warning below
+    .build();
+----
+
+WARNING: `verifyHostname` defaults to `true`. Setting it to `false` relaxes *hostname matching only* —
+certificate chain trust, expiry, and algorithm constraints all remain fully enforced, so an untrusted
+or expired certificate is still rejected. It **cannot** be combined with `sslContext(...)`: the
+relaxation applies only to the default-trust-store context the transport derives, so a caller-supplied
+context leaves nothing to relax, and `build()` throws `IllegalArgumentException` when both are set.
+With hostname verification relaxed, trust material therefore comes exclusively from the JVM default
+trust store (`javax.net.ssl.trustStore` and its companions). Use it for local development and test
+topologies only, never in production. See
+xref:../../../doc/adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008]
+for the decision and its rationale.
+
 == Complete Integration Example
 
 [source,java]

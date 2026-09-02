@@ -122,6 +122,7 @@ public class HttpJwksLoaderConfig {
         public HttpJwksLoaderConfigBuilder readTimeoutSeconds(int seconds);
         public HttpJwksLoaderConfigBuilder refreshIntervalSeconds(int seconds);
         public HttpJwksLoaderConfigBuilder sslContext(SSLContext context);
+        public HttpJwksLoaderConfigBuilder verifyHostname(boolean verify);  // Default: true; mutually exclusive with sslContext
         public HttpJwksLoaderConfigBuilder retryConfig(RetryConfig config);
         public HttpJwksLoaderConfigBuilder issuerIdentifier(String issuer);
         public HttpJwksLoaderConfigBuilder keyRotationGracePeriod(Duration period);
