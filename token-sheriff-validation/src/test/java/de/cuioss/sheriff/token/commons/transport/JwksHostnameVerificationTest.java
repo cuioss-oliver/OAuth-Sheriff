@@ -177,7 +177,15 @@ class JwksHostnameVerificationTest {
         // Assert
         assertEquals(0, moduleDispatcher.getCallCounter(),
                 "the handshake must be refused before any request is answered");
-        assertFalse(causeChain(failure).isEmpty(), "the failure must carry a diagnosable cause");
+        String causes = causeChain(failure);
+        assertFalse(causes.isEmpty(), "the failure must carry a diagnosable cause");
+        // Positively pin the rejection to chain-trust validation, mirroring the reciprocal check on the
+        // default-posture control above — without this, a socket/read timeout (also an IOException, also
+        // reaching the server zero times) would satisfy every other assertion here and silently masquerade
+        // as proof that chain validation is still enforced.
+        assertTrue(causes.contains("pkix") || causes.contains("unable to find valid certification path"),
+                "the rejection must be a certificate chain-trust failure (e.g. PKIX path building failed), "
+                        + "not an unrelated IOException such as a timeout, but the cause chain was: " + causes);
     }
 
     /**

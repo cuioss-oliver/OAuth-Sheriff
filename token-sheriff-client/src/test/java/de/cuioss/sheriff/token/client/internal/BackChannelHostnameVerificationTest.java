@@ -52,6 +52,7 @@ import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.cert.X509Certificate;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -216,10 +217,32 @@ class BackChannelHostnameVerificationTest {
         var clientAuth = auth(config);
 
         // Act & Assert — relaxing hostname matching must not relax chain validation
-        assertThrows(TransportException.class,
+        TransportException failure = assertThrows(TransportException.class,
                 () -> flow.exchange(metadata, context, callback, clientAuth),
                 "an untrusted issuer must still be refused when hostname verification is disabled");
         moduleDispatcher.assertCallsAnswered(0);
+        // Positively pin the rejection to chain-trust validation. Without this, a socket/read timeout —
+        // also thrown as an IOException, wrapped identically into a TransportException, and also reaching
+        // the server zero times — would satisfy every other assertion here and silently masquerade as
+        // proof that chain validation is still enforced.
+        String causes = causeChain(failure);
+        assertTrue(causes.contains("pkix") || causes.contains("unable to find valid certification path"),
+                "the rejection must be a certificate chain-trust failure (e.g. PKIX path building failed), "
+                        + "not an unrelated IOException such as a timeout, but the cause chain was: " + causes);
+    }
+
+    /** Flattens a throwable's cause chain into one lower-cased string for message-shape assertions. */
+    private static String causeChain(Throwable throwable) {
+        StringBuilder builder = new StringBuilder();
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current.getMessage() != null) {
+                builder.append(current.getMessage()).append(" | ");
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return builder.toString().toLowerCase(Locale.ROOT);
     }
 
     private static ClientConfiguration tlsConfig(boolean verifyHostname) {

@@ -51,39 +51,22 @@
         <frontend.npm.version>10.9.2</frontend.npm.version>
         <!-- TEMPORARY: overrides the 2.1.0 value inherited from de.cuioss:cui-java-bom so this
              project can consume the verifyHostname knob from cui-http PR #167 ahead of its release.
-             REMOVAL CONDITION: drop this property override, the <repositories> block, and the
-             maven-enforcer-plugin execution below together once cui-http ships a release
-             carrying PR #167. -->
+             No <repositories> declaration is needed alongside it: de.cuioss:cui-parent-pom already
+             declares the sonatype-snapshots repository pointing at
+             https://central.sonatype.com/repository/maven-snapshots/ with snapshots enabled, and
+             this project inherits it through cui-java-parent -> cui-java-bom -> cui-parent-pom.
+             REMOVAL CONDITION: drop this property override and the maven-enforcer-plugin execution
+             below together once cui-http ships a release carrying PR #167. -->
         <version.cui.http>2.2-SNAPSHOT</version.cui.http>
     </properties>
-
-    <!-- TEMPORARY: the Central snapshots channel, needed only to resolve the
-         de.cuioss:cui-http:2.2-SNAPSHOT pin above. <releases> is disabled so the release channel
-         is untouched and only snapshot artifacts are looked up here.
-         REMOVAL CONDITION: drop this <repositories> block, the version.cui.http property override,
-         and the maven-enforcer-plugin execution below together once cui-http ships a release
-         carrying PR #167. -->
-    <repositories>
-        <repository>
-            <id>central</id>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-            <releases>
-                <enabled>false</enabled>
-            </releases>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
 
     <build>
         <plugins>
             <!-- TEMPORARY: fails the build at validate when any module resolves a cui-http older
                  than 2.2-SNAPSHOT, so a silent fallback to the BOM-inherited 2.1.0 surfaces as a
                  banned-dependency error rather than compiling green against the pre-PR-#167 API.
-                 REMOVAL CONDITION: drop this execution, the version.cui.http property override,
-                 and the <repositories> block together once cui-http ships a release
-                 carrying PR #167. -->
+                 REMOVAL CONDITION: drop this execution and the version.cui.http property override
+                 together once cui-http ships a release carrying PR #167. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
