@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class HttpJwksLoaderConfigTest {
 
     private static final String VALID_URL = "https://example.com/.well-known/jwks.json";
+    private static final String WELL_KNOWN_URL = "https://example.com/.well-known/openid-configuration";
     private static final int REFRESH_INTERVAL = 60;
 
     @Test
@@ -579,5 +580,73 @@ class HttpJwksLoaderConfigTest {
                 "Custom ParserConfig should be used in well-known config");
         assertNotNull(config.getWellKnownConfig(),
                 "WellKnownConfig should be created with the custom ParserConfig");
+    }
+
+    @Test
+    @DisplayName("Should enable hostname verification by default on the direct-JWKS branch")
+    void shouldEnableHostnameVerificationByDefaultOnDirectBranch() {
+        HttpJwksLoaderConfig config = HttpJwksLoaderConfig.builder()
+                .jwksUrl(VALID_URL)
+                .issuerIdentifier("test-issuer")
+                .build();
+
+        assertTrue(config.getHttpHandler().isVerifyHostname(),
+                "hostname verification must stay enabled when the knob is never called");
+    }
+
+    @Test
+    @DisplayName("Should enable hostname verification by default on the well-known branch")
+    void shouldEnableHostnameVerificationByDefaultOnWellKnownBranch() {
+        HttpJwksLoaderConfig config = HttpJwksLoaderConfig.builder()
+                .wellKnownUrl(WELL_KNOWN_URL)
+                .build();
+
+        assertTrue(config.getHttpHandler().isVerifyHostname(),
+                "the discovery transport must default to hostname verification enabled");
+    }
+
+    @Test
+    @DisplayName("Should forward verifyHostname(false) to the handler on the direct-JWKS branch")
+    void shouldForwardExplicitVerifyHostnameOnDirectBranch() {
+        HttpJwksLoaderConfig config = HttpJwksLoaderConfig.builder()
+                .jwksUrl(VALID_URL)
+                .issuerIdentifier("test-issuer")
+                .verifyHostname(false)
+                .build();
+
+        assertFalse(config.getHttpHandler().isVerifyHostname(),
+                "an explicit verifyHostname(false) must reach the built JWKS handler");
+    }
+
+    @Test
+    @DisplayName("Should forward verifyHostname(false) to the handler on the well-known branch")
+    void shouldForwardExplicitVerifyHostnameOnWellKnownBranch() {
+        HttpJwksLoaderConfig config = HttpJwksLoaderConfig.builder()
+                .wellKnownUrl(WELL_KNOWN_URL)
+                .verifyHostname(false)
+                .build();
+
+        assertFalse(config.getHttpHandler().isVerifyHostname(),
+                "the knob must not be inert for well-known-configured issuers");
+    }
+
+    @Test
+    @DisplayName("Should reject verifyHostname(false) combined with sslContext(...) naming the conflict")
+    void shouldRejectVerifyHostnameFalseWithSslContext() throws Exception {
+        var builder = HttpJwksLoaderConfig.builder()
+                .jwksUrl(VALID_URL)
+                .issuerIdentifier("test-issuer")
+                .verifyHostname(false)
+                .sslContext(SSLContext.getDefault());
+
+        var exception = assertThrows(IllegalArgumentException.class, builder::build,
+                "the incompatible trust-material combination must be rejected at build()");
+
+        assertTrue(exception.getMessage().contains("verifyHostname(false) cannot be combined with sslContext(...)"),
+                "the guard's own message must name the conflict, but was: " + exception.getMessage());
+        assertFalse(exception.getMessage().contains("Invalid URL or HttpHandler configuration"),
+                "a trust-material conflict must not be reported as a malformed-URL problem");
+        assertNull(exception.getCause(),
+                "the conflict must be raised first-class, not rewrapped around a nested cause");
     }
 }

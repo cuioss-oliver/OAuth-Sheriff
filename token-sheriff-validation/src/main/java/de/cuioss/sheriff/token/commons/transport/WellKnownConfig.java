@@ -120,6 +120,14 @@ public class WellKnownConfig {
         private ParserConfig parserConfig;
         private boolean allowInsecureHttp = false;
         private boolean allowLoopbackEgress = false;
+        private boolean verifyHostname = true;
+        /**
+         * Tracks whether the caller supplied an {@link SSLContext} of their own. {@link #sslContext(SSLContext)}
+         * is a pass-through to {@link #httpHandlerBuilder} and keeps no locally readable state, so this flag is
+         * what lets {@link #build()} reject the {@code verifyHostname(false)} combination with a first-class
+         * message instead of letting it surface as a malformed-endpoint error.
+         */
+        private boolean sslContextSupplied = false;
         private final List<String> allowedEgressHosts = new ArrayList<>();
 
         /**
@@ -146,6 +154,33 @@ public class WellKnownConfig {
          */
         public WellKnownConfigBuilder allowInsecureHttp(boolean allowInsecureHttp) {
             this.allowInsecureHttp = allowInsecureHttp;
+            return this;
+        }
+
+        /**
+         * Controls whether TLS hostname verification is performed for the discovery fetch.
+         * <p>
+         * Defaults to {@code true} (secure by default). Setting this to {@code false} relaxes
+         * <strong>hostname matching only</strong> — certificate chain trust, expiry, and algorithm
+         * constraints all remain fully enforced, so an untrusted or expired certificate is still
+         * rejected.
+         * <p>
+         * This knob cannot be combined with {@link #sslContext(SSLContext)}. The relaxation applies only
+         * to the default-trust-store context the underlying HTTP handler derives, so a caller-supplied
+         * context leaves nothing to relax; {@link #build()} rejects the combination with an
+         * {@link IllegalArgumentException}. When verification is disabled, trust material must therefore
+         * be supplied through the JVM default trust store.
+         * <p>
+         * <strong>Never set this to {@code false} in production.</strong> Disabling hostname verification
+         * removes the guarantee that the certificate presented belongs to the host actually contacted,
+         * which re-opens the man-in-the-middle vector that chain validation alone does not close. It
+         * exists for local development and test topologies serving SAN-mismatched certificates.
+         *
+         * @param verifyHostname {@code false} to relax hostname matching, {@code true} (default) to enforce it
+         * @return this builder instance
+         */
+        public WellKnownConfigBuilder verifyHostname(boolean verifyHostname) {
+            this.verifyHostname = verifyHostname;
             return this;
         }
 
@@ -245,6 +280,7 @@ public class WellKnownConfig {
          */
         public WellKnownConfigBuilder sslContext(SSLContext sslContext) {
             httpHandlerBuilder.sslContext(sslContext);
+            this.sslContextSupplied = sslContext != null;
             return this;
         }
 
@@ -290,8 +326,20 @@ public class WellKnownConfig {
          * @throws IllegalArgumentException if the HTTP handler configuration is invalid
          */
         public WellKnownConfig build() {
+            // Fail fast BEFORE the try below: that catch rewraps every IllegalArgumentException as
+            // "Invalid well-known endpoint configuration", which would present a trust-material conflict
+            // as a malformed-endpoint problem. Raising it here keeps the message first-class rather than
+            // burying the real cause one level down.
+            if (!verifyHostname && sslContextSupplied) {
+                throw new IllegalArgumentException(
+                        "WellKnownConfigBuilder: verifyHostname(false) cannot be combined with sslContext(...). "
+                                + "The hostname relaxation applies only to the default-trust-store context the HTTP handler derives, "
+                                + "so a caller-supplied context leaves nothing to relax. Either drop sslContext(...) and supply trust "
+                                + "through the JVM default trust store, or keep verifyHostname(true).");
+            }
             try {
                 httpHandlerBuilder.allowInsecureHttp(allowInsecureHttp);
+                httpHandlerBuilder.verifyHostname(verifyHostname);
                 HttpHandler httpHandler = httpHandlerBuilder.build();
 
                 // Emit a security warning when the discovery endpoint uses cleartext HTTP,

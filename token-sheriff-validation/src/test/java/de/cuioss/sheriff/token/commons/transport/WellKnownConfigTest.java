@@ -254,4 +254,46 @@ class WellKnownConfigTest {
         assertNotNull(config);
         assertNotNull(config.getHttpHandler());
     }
+
+    @Test
+    @DisplayName("Should enable hostname verification by default")
+    void shouldEnableHostnameVerificationByDefault() {
+        WellKnownConfig config = WellKnownConfig.builder()
+                .wellKnownUrl(TEST_WELL_KNOWN_URL)
+                .build();
+
+        assertTrue(config.getHttpHandler().isVerifyHostname(),
+                "hostname verification must stay enabled when the knob is never called");
+    }
+
+    @Test
+    @DisplayName("Should forward verifyHostname(false) to the built handler")
+    void shouldForwardExplicitVerifyHostname() {
+        WellKnownConfig config = WellKnownConfig.builder()
+                .wellKnownUrl(TEST_WELL_KNOWN_URL)
+                .verifyHostname(false)
+                .build();
+
+        assertFalse(config.getHttpHandler().isVerifyHostname(),
+                "an explicit verifyHostname(false) must reach the built discovery handler");
+    }
+
+    @Test
+    @DisplayName("Should reject verifyHostname(false) combined with sslContext(...) naming the conflict")
+    void shouldRejectVerifyHostnameFalseWithSslContext() throws Exception {
+        var builder = WellKnownConfig.builder()
+                .wellKnownUrl(TEST_WELL_KNOWN_URL)
+                .verifyHostname(false)
+                .sslContext(SSLContext.getDefault());
+
+        var exception = assertThrows(IllegalArgumentException.class, builder::build,
+                "the incompatible trust-material combination must be rejected at build()");
+
+        assertTrue(exception.getMessage().contains("verifyHostname(false) cannot be combined with sslContext(...)"),
+                "the guard's own message must name the conflict, but was: " + exception.getMessage());
+        assertFalse(exception.getMessage().contains("Invalid well-known endpoint configuration"),
+                "a trust-material conflict must not be reported as a malformed-endpoint problem");
+        assertNull(exception.getCause(),
+                "the conflict must be raised first-class, not rewrapped around a nested cause");
+    }
 }
