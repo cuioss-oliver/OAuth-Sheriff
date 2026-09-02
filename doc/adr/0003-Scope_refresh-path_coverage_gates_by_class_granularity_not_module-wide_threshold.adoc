@@ -51,7 +51,7 @@ detectable at all. The correct response to a dilution blind spot is to narrow th
 scope to the at-risk subset, not to retune the threshold at the existing, too-coarse scope.
 
 The gate is therefore a `CLASS`-element JaCoCo `check` rule scoped by an explicit `<includes>` list
-to exactly the five classes that own the refresh path, bound inside the module's always-active
+to exactly the classes that own the refresh path — nine as of this writing — bound inside the module's always-active
 `<build><plugins>` section so it participates in the default lane — including CI — with no
 profile flag. Its floors are `BRANCH >= 0.80` and `INSTRUCTION >= 0.90`, set with real margin above
 the scoped classes' measured coverage once their own gaps were closed, rather than at the tightest
@@ -72,7 +72,7 @@ value that merely clears at the current commit.
 --
 ** The opt-in `-Pcoverage` aggregate gate inherited from `cui-java-parent` (`element=BUNDLE`,
    gating both `INSTRUCTION >= 0.80` and `BRANCH >= 0.80`) is the **module-wide baseline**. It
-   aggregates the entire module — the five scoped classes included — so it is not a gate over the
+   aggregates the entire module — the scoped classes included — so it is not a gate over the
    complement of the scoped set; the two overlap by construction, and the scoped rule exists
    because the aggregate cannot resolve its subset, not because it excludes it. It is local-only;
    CI never runs it.
@@ -89,8 +89,20 @@ so responds to coverage removed from lines the change never touched. Neither sub
 
 *Negative / Risks:*
 
-* The `<includes>` list is hand-maintained. A class added to the refresh path later must be added
-  explicitly.
+* The `<includes>` list stays hand-maintained by decision — the derived alternatives (a
+  `@RefreshPath` marker annotation, or pattern-derived entries such as `…flow.Refresh*` /
+  `…flow.Redeemed*`) were rejected as, respectively, new public production API added to serve a
+  build gate, and incomplete: the pattern shape misses `token.RotationResult`,
+  `token.RefreshTokenFamily`, `lifecycle.RefreshScheduler` and `lifecycle.InMemoryTokenStore`.
+  This is no longer an unguarded risk: `RefreshPathCoverageGuardTest` fails the build on both drift
+  directions — an *inert* entry (a listed FQCN binding to no class) and a *missing* sibling (a
+  refresh-path class absent from the list).
++
+Accepted residual risk: the missing-sibling leg demands a class only when its package is one of the
+guarded packages *and* its first camel-case word is one the list already uses, so a refresh-path
+class escapes it as soon as *either* condition fails on its own — an unmatched name inside a
+guarded package escapes just as surely as a matched name outside the guarded packages — and must be
+added by hand. The inert-entry leg is unaffected and catches every non-binding entry.
 * An entry that stops matching any real class (a rename, a package move, a misspelling) makes the
   rule evaluate against **zero classes and report success** rather than error — JaCoCo's
   `BundleChecker` simply never invokes a limit, and `jacoco:check` logs

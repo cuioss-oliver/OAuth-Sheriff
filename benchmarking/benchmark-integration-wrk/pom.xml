@@ -13,7 +13,7 @@
     <description>WRK-based HTTP benchmarks for OAuth/JWT validation endpoints with integration test infrastructure</description>
 
     <properties>
-        <version.lombok>1.18.46</version.lombok>
+        <version.lombok>1.18.48</version.lombok>
         <!-- Skip benchmarks by default (enable with -Pbenchmark) -->
         <skip.benchmark>true</skip.benchmark>
 

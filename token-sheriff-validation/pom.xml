@@ -15,7 +15,7 @@
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.token.validation</maven.jar.plugin.automatic.module.name>
-        <version.lombok>1.18.46</version.lombok>
+        <version.lombok>1.18.48</version.lombok>
     </properties>
 
     <dependencyManagement>

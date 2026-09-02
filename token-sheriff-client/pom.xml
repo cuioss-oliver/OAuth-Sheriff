@@ -18,7 +18,7 @@
 
     <properties>
         <maven.jar.plugin.automatic.module.name>de.cuioss.sheriff.token.client</maven.jar.plugin.automatic.module.name>
-        <version.lombok>1.18.46</version.lombok>
+        <version.lombok>1.18.48</version.lombok>
         <version.dsl.json>2.0.2</version.dsl.json>
         <version.archunit>1.5.0</version.archunit>
         <!-- Explicit Failsafe version: token-sheriff-client inherits no maven-failsafe-plugin
@@ -249,7 +249,51 @@
                      NOT an error: BundleChecker simply never evaluates a limit for it and jacoco:check reports
                      "All coverage checks have been met." So the failure mode of an edit here is a FALSE GREEN
                      that silently recreates the blind spot this gate exists to close. When adding a
-                     refresh-path class, use the dotted form and confirm the gate still fires. -->
+                     refresh-path class, use the dotted form and confirm the gate still fires.
+
+                     Why RedeemedRefreshFailure is deliberately NOT in the list: it is a pure interface
+                     (one abstract method, no default body, no constants, no static initializer), so
+                     jacoco measures zero INSTRUCTION and zero BRANCH for it. A COVEREDRATIO limit over
+                     an all-zero counter cannot bind — jacoco skips the limit rather than failing it —
+                     so listing it would add a permanently vacuous entry that looks like coverage. Its
+                     implementors (RedeemedResponseException, RedeemedScopeRefusalException,
+                     RedeemedValidationRefusalException) ARE listed, and that is where the redemption
+                     signal is actually measured.
+
+                     Binding requirement — a green build is NOT evidence this rule fires. Because a
+                     misspelled or vacuous include is silently skipped (see the FALSE GREEN note above),
+                     every edit to this include list MUST be discharged by a negative control: remove or
+                     disable the tests covering the newly listed class, run `mvn verify`, and confirm the
+                     build turns RED naming that class with a BRANCH/INSTRUCTION violation — NOT "All
+                     coverage checks have been met" — then restore the coverage and confirm green again.
+                     Record both runs. Only the red run proves the entry binds.
+
+                     Run the negative control with `clean`. target/jacoco.exec is APPENDED to across
+                     invocations (each run adds a sessioninfo), so a `verify` without `clean` merges the
+                     previous run's coverage into the report and the removed coverage still shows as
+                     covered — the control then reports a FALSE GREEN and proves nothing.
+
+                     The list is deliberately explicit and hand-maintained. Two derived alternatives were
+                     considered and rejected: a @RefreshPath marker annotation, which would add a new
+                     public production API purely to feed a build gate; and pattern-derived entries such
+                     as `…flow.Refresh*` / `…flow.Redeemed*`, which are incomplete — they miss
+                     token.RotationResult, token.RefreshTokenFamily, lifecycle.RefreshScheduler and
+                     lifecycle.InMemoryTokenStore, all of which are on the refresh path but named and
+                     packaged outside that shape. Nine explicit dotted FQCNs, no wildcards.
+
+                     A hand-maintained list is only safe because it is guarded.
+                     RefreshPathCoverageGuardTest fails the build on BOTH drift directions: (a) an INERT
+                     entry — a listed FQCN that binds to no class, i.e. the misspelling case above that
+                     jacoco itself reports as a silent green; and (b) a MISSING sibling — a refresh-path
+                     class that exists but was never added here. An edit to this block therefore can no
+                     longer silently produce a false green.
+
+                     Accepted residual risk: leg (b) demands a class only when its package is one of the
+                     guarded packages AND its first camel-case word is one the list already uses. A
+                     refresh-path class therefore escapes leg (b) as soon as EITHER condition fails on
+                     its own — an unmatched name inside a guarded package escapes just as surely as a
+                     matched name outside the guarded packages — and must be added here by hand. Leg (a)
+                     is unaffected — it catches every inert entry. -->
                 <executions>
                     <execution>
                         <id>refresh-path-coverage-check</id>
@@ -264,6 +308,7 @@
                                     <includes>
                                         <include>de.cuioss.sheriff.token.client.flow.RefreshFlow</include>
                                         <include>de.cuioss.sheriff.token.client.flow.RefreshRedemption</include>
+                                        <include>de.cuioss.sheriff.token.client.flow.RedeemedResponseException</include>
                                         <include>de.cuioss.sheriff.token.client.flow.RedeemedScopeRefusalException</include>
                                         <include>de.cuioss.sheriff.token.client.flow.RedeemedValidationRefusalException</include>
                                         <include>de.cuioss.sheriff.token.client.token.RotationResult</include>
