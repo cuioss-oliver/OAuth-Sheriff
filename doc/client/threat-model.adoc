@@ -146,7 +146,14 @@ The client engine:
 | *Token-endpoint TLS downgrade / MITM.* An on-path attacker downgrades or MITMs a token /
   PAR / revocation request to substitute responses or capture secrets.
 | *Delegated to commons* — TLS 1.2+ with certificate validation on every outbound request
-  (`COMMONS-2`); the flow relies on it and adds no transport of its own.
+  (`COMMONS-2`); the flow relies on it and adds no transport of its own. It inherits the
+  `COMMONS-2` hostname-matching carve-out as the symmetric peer of the commons
+  xref:../commons/threat-model.adoc#T-TLS[T-TLS] row, reached here by
+  `sheriff.client.verify-hostname` — a client-wide, default-ON knob covering every back-channel
+  call (token, userinfo, revocation, PAR). Relaxing it narrows hostname matching only — chain
+  trust, expiry and algorithm constraints stay enforced — and the residual exposure is recorded
+  with the delegated control, in the commons threat model's
+  xref:../commons/threat-model.adoc#_residual_risks[residual risks].
 | https://www.rfc-editor.org/rfc/rfc9700#section-2.6[RFC 9700 §2.6], xref:../commons/threat-model.adoc#T-TLS[commons T-TLS]
 | xref:requirements.adoc#CLIENT-14[CLIENT-14] (relies on xref:../commons/requirements.adoc#COMMONS-2[COMMONS-2])
 
