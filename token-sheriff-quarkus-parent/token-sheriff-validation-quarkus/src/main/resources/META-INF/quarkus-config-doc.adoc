@@ -59,9 +59,23 @@ Properties under `sheriff.token.issuers.<name>.*` — one block per issuer.
 |`jwks.http.key-rotation-grace-period-seconds` |int |`300` |Grace period for retired keys during rotation
 |`jwks.http.max-retired-key-sets` |int |`3` |Max retained retired key sets
 |`jwks.http.allow-insecure-http` |boolean |`false` |Permit plain-HTTP JWKS endpoints (testing only)
+|`jwks.http.verify-hostname` |boolean |`true` |Enforce TLS hostname verification on the JWKS / well-known fetch. Set to `false` only for SAN-mismatched development certificates (see NOTE below)
 |`jwks.http.allow-loopback-egress` |boolean |`false` |Permit loopback resolutions in the SSRF egress guard (local development / MockWebServer)
 |`jwks.http.allowed-egress-hosts` |String (csv) |— |Explicit host allow-list bypassing the egress address-range checks
 |===
+
+NOTE: `jwks.http.verify-hostname` is the only row in this table that defaults to the *secure* value
+being `true` — every other switch here is off by default and is opted into. Setting it to `false`
+relaxes *hostname matching only*: certificate chain trust, expiry, and algorithm constraints stay
+fully enforced, so an untrusted or expired certificate is still rejected. The blast radius is
+per-issuer and limited to that issuer's JWKS and well-known discovery fetches. It exists for local
+development and test topologies that serve certificates whose SAN does not match the host actually
+contacted (for example a Docker service name, or a shared wildcard certificate reached under an
+internal alias). Never set it to `false` in production — without hostname verification there is no
+guarantee that the presented certificate belongs to the host contacted, which re-opens the
+man-in-the-middle vector chain validation alone does not close. See
+xref:../../../../../../doc/adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008]
+for the rationale.
 
 === DPoP (RFC 9449)
 
