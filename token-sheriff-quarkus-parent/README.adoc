@@ -55,7 +55,8 @@ This module provides integration of the Token-Sheriff validation library into Qu
 
 The complete documentation of the configuration options can be found in the Quarkus extension metadata:
 
-xref:token-sheriff-validation-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc[Quarkus Configuration Documentation]
+* xref:token-sheriff-validation-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc[Quarkus Configuration Documentation] - All `sheriff.token.*` properties for the validation extension
+* xref:token-sheriff-client-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc[Client Quarkus Configuration Documentation] - All `sheriff.client.*` properties for the client-engine extension
 
 == Usage Examples
 

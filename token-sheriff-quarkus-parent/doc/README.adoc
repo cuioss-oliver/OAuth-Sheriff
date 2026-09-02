@@ -26,6 +26,7 @@ The Token-Sheriff Quarkus extension provides JWT validation through a modular ar
 == Configuration & Usage
 
 * **xref:../token-sheriff-validation-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc[Configuration Reference]** - All `sheriff.token.*` properties and defaults
+* **xref:../token-sheriff-client-quarkus/src/main/resources/META-INF/quarkus-config-doc.adoc[Client Configuration Reference]** - All `sheriff.client.*` properties and defaults
 
 * **xref:configuration/testing-configuration.adoc[Testing Configuration]** - Test profile setup and token utilities
 * **xref:configuration/native-image-configuration.adoc[Native Image Configuration]** - GraalVM compilation settings
