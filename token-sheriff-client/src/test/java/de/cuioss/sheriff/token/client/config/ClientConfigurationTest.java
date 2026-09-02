@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -156,6 +157,53 @@ class ClientConfigurationTest {
                         defaulted.getConnectTimeoutSeconds()),
                 () -> assertEquals(ClientConfiguration.DEFAULT_READ_TIMEOUT_SECONDS,
                         defaulted.getReadTimeoutSeconds()));
+    }
+
+    @Test
+    @DisplayName("Should enable hostname verification by default and retain an explicit opt-out")
+    void shouldDefaultAndRetainVerifyHostname() {
+        var defaulted = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC).build();
+        var relaxed = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .verifyHostname(false).build();
+
+        assertAll("hostname verification is an opt-out",
+                () -> assertTrue(defaulted.isVerifyHostname(),
+                        "an unconfigured client must verify hostnames"),
+                () -> assertFalse(relaxed.isVerifyHostname(),
+                        "an explicit verifyHostname(false) must be retained"));
+    }
+
+    @Test
+    @DisplayName("Should reject verifyHostname(false) combined with a caller-supplied sslContext at build time")
+    void shouldRejectVerifyHostnameFalseWithSslContext() {
+        var conflicting = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .verifyHostname(false)
+                .sslContext(assertDoesNotThrow(SSLContext::getDefault));
+
+        var exception = assertThrows(IllegalArgumentException.class, conflicting::build,
+                "the incompatible combination must fail at build(), not at the first token exchange");
+
+        assertTrue(exception.getMessage().contains("verifyHostname(false) cannot be combined with sslContext(...)"),
+                "the message must name the conflicting pair, but was: " + exception.getMessage());
+    }
+
+    @Test
+    @DisplayName("Should accept a caller-supplied sslContext while hostname verification stays enabled")
+    void shouldAcceptSslContextWithHostnameVerificationEnabled() {
+        var config = ClientConfiguration.builder()
+                .issuer(issuer()).clientId(Generators.nonBlankStrings().next())
+                .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+                .sslContext(assertDoesNotThrow(SSLContext::getDefault)).build();
+
+        assertAll("per-client trust and hostname verification are independent axes",
+                () -> assertNotNull(config.getSslContext()),
+                () -> assertTrue(config.isVerifyHostname()));
     }
 
     @Test

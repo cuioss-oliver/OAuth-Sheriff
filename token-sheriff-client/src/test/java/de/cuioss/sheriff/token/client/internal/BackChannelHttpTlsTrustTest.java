@@ -25,17 +25,25 @@ import javax.net.ssl.SSLContext;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies that the per-client TLS trust configured on {@link ClientConfiguration} reaches the
- * outbound transport at the {@link BackChannelHttp#validatedHandler(String, String)} seam, and that
- * adding the trust hand-off did not regress the consistent-transport-typing guarantee (M9).
+ * Verifies that the outbound TLS controls configured on {@link ClientConfiguration} reach the
+ * transport at the {@link BackChannelHttp#validatedHandler(String, String)} seam — both the per-client
+ * trust material and the hostname-verification posture — and that adding those hand-offs did not
+ * regress the consistent-transport-typing guarantee (M9).
+ * <p>
+ * The assertions here are identity- and flag-level pass-through checks on the constructed handler: this
+ * class opens no socket and runs no handshake. The behavioural SAN-mismatch control pair, which needs a
+ * TLS server, a certificate, and process-global trust-store properties, lives in
+ * {@code BackChannelHostnameVerificationTest} instead.
  */
-@DisplayName("BackChannelHttp per-client TLS trust")
+@DisplayName("BackChannelHttp per-client TLS trust and hostname verification")
 class BackChannelHttpTlsTrustTest {
 
     private static final int MAX_CONTENT_SIZE = 8192;
@@ -135,6 +143,48 @@ class BackChannelHttpTlsTrustTest {
                 () -> assertSame(tlsClient, backChannel.sharedClient(
                                 backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT)),
                         "two TLS endpoints on one configuration must still share a pooled client"));
+    }
+
+    @Test
+    @DisplayName("Should leave hostname verification enabled for an unconfigured client")
+    void shouldVerifyHostnameByDefaultWhenUnconfigured() {
+        var backChannel = backChannelWithoutTrust();
+
+        var handler = backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT);
+
+        assertTrue(handler.isVerifyHostname(),
+                "an unconfigured client must keep hostname verification enabled");
+    }
+
+    @Test
+    @DisplayName("Should apply verifyHostname(false) to every endpoint handler the helper produces")
+    void shouldApplyVerifyHostnameToEveryEndpointHandler() {
+        // Built WITHOUT an sslContext: the two are mutually exclusive, so configurationBuilder() is
+        // used directly rather than backChannelWith(...).
+        var backChannel = new BackChannelHttp(configurationBuilder()
+                .verifyHostname(false)
+                .build(), MAX_CONTENT_SIZE, BackChannelHttp.FIXED_PARSER_CONFIG_ORIGIN);
+
+        var tokenHandler = backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT);
+        var userinfoHandler = backChannel.validatedHandler(USERINFO_ENDPOINT, FAILURE_CONTEXT);
+
+        assertAll("all endpoints of one authorization server share the same hostname-verification posture",
+                () -> assertFalse(tokenHandler.isVerifyHostname()),
+                () -> assertFalse(userinfoHandler.isVerifyHostname()));
+    }
+
+    @Test
+    @DisplayName("Should keep hostname verification enabled when a caller-supplied SSL context is configured")
+    void shouldKeepHostnameVerificationWithConfiguredSslContext() {
+        var backChannel = backChannelWith(freshSslContext());
+
+        var handler = backChannel.validatedHandler(TOKEN_ENDPOINT, FAILURE_CONTEXT);
+
+        // The executable form of "no existing assertion in this file regressed": every other test here
+        // supplies an SSLContext and leaves verifyHostname at its true default, so none trips the new
+        // ClientConfiguration guard. The two axes are independent.
+        assertTrue(handler.isVerifyHostname(),
+                "configuring per-client trust must not disturb hostname verification");
     }
 
     private static BackChannelHttp backChannelWith(SSLContext sslContext) {
