@@ -253,7 +253,17 @@ requirement does not feed. Against a private-CA authorization server both MUST b
 otherwise token retrieval succeeds and validation then fails the JWKS fetch, and the natural
 workaround is exactly the process-global truststore override this requirement exists to avoid.
 
-* Source: xref:../commons/requirements.adoc[commons] (`COMMONS-2`, `cui-http` `HttpHandler.sslContext()`), https://www.rfc-editor.org/rfc/rfc9700#section-2.6[RFC 9700 §2.6] (TLS on every outbound request).
+A caller-supplied context and relaxed hostname verification are mutually exclusive, because the
+hostname relaxation applies only to the default-trust-store context the transport derives — a
+caller-supplied context leaves nothing to relax. The engine therefore MUST refuse, at
+configuration-build time, a configuration that supplies an `SSLContext` together with hostname
+verification disabled, and MUST NOT defer that refusal to the first outbound call, where it would
+surface as a transport failure rather than the configuration error it is. The same exclusion governs
+the validation-side analogue `HttpJwksLoaderConfig.sslContext()`, so both sides of the product reject
+the incompatible pair the same way; a deployment needing both relaxed hostname matching and private
+trust material MUST steer the JVM default trust store instead.
+
+* Source: xref:../commons/requirements.adoc[commons] (`COMMONS-2`, `cui-http` `HttpHandler.sslContext()`), https://www.rfc-editor.org/rfc/rfc9700#section-2.6[RFC 9700 §2.6] (TLS on every outbound request), xref:../adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008] (hostname-verification knob and its mutual exclusion with per-client trust).
 
 == Token requirements
 

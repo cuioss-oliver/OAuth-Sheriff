@@ -1,0 +1,165 @@
+= ADR-0008: Adopt the upstream cui-http verifyHostname knob rather than a local trust manager
+:toc: left
+:toclevels: 2
+:sectnums:
+
+// adr-metadata
+// summary: Outbound TLS hostname verification is a configurable default-ON knob delegated to the upstream cui-http HttpHandlerBuilder, not a locally implemented trust manager; relaxing it is mutually exclusive with a caller-supplied SSLContext, so trust then comes exclusively from the JVM default trust store
+// tags: security, tls, transport
+// affects: token-sheriff-validation, token-sheriff-client
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Context
+
+Both core library modules issue outbound HTTPS calls whose peer is named by configuration or, worse,
+advertised by a discovery document: `token-sheriff-validation` fetches JWKS key material, and
+`token-sheriff-client` drives the back-channel token, PAR, userinfo, revocation, and discovery
+endpoints. Every one of those calls performs a TLS handshake in which two independent checks run:
+whether the presented certificate chains to a trusted anchor, and whether the certificate actually
+belongs to the host being contacted.
+
+There is a recurring, legitimate class of deployment — local development, CI topologies, and
+container networks where a service is reached by a name the certificate was never issued for — in
+which the second check fails while the first can be made to succeed. A library that offers no way to
+express "trust this chain, but do not require the name to match" pushes operators toward remedies
+that are far broader than the problem: disabling certificate validation wholesale, or relaxing TLS
+process-globally. Those remedies are indistinguishable, at configuration-review time, from a
+misconfiguration that silently accepts any peer in production.
+
+The structural choice point is therefore not *whether* to allow hostname relaxation, but *where the
+mechanism lives*. Hostname verification in the JDK HTTP client is enforced through the trust
+manager, so any relaxation requires supplying trust managers that validate the chain while skipping
+the name check. That is security-sensitive machinery: it is easy to write a version that also
+discards chain validation, and the difference is invisible in a diff. The question this ADR settles
+is whether this project implements and maintains that machinery itself, or delegates it to the HTTP
+library it already depends on.
+
+== Decision
+
+Outbound hostname verification is a configurable, default-ON knob delegated entirely to the upstream
+`cui-http` transport: `HttpHandlerBuilder.verifyHostname(boolean)`. This project contributes
+configuration surface and validation, never trust-manager implementation.
+
+The knob is exposed on the three configuration builders that own outbound transport —
+`HttpJwksLoaderConfigBuilder` and `WellKnownConfigBuilder` in the validation module, and
+`ClientConfiguration` in the client module — and defaults to `true` in every one of them, so the
+secure posture requires no action and relaxation is always an explicit, reviewable opt-in. In the
+validation module the value is forwarded on both the direct-JWKS and the well-known discovery branch,
+so the knob is never inert for a discovery-configured issuer; in the client module it is forwarded at
+the single `BackChannelHttp.validatedHandler()` seam, so all five endpoint clients inherit one
+posture from one place.
+
+Disabling the knob relaxes hostname matching only. Certificate chain trust, expiry, and algorithm
+constraints remain fully enforced, because the upstream mechanism derives a context whose trust
+managers still perform full chain validation and skip only the name check. That scoping is the whole
+reason the knob is acceptable at all, and it is asserted executably rather than documented: each
+module carries a control proving an untrusted issuer is still refused with the knob off.
+
+The upstream delegating-trust-manager design is recorded in `cui-http` ADR-0007. This project cites
+that rationale rather than restating or re-deriving it.
+
+== Consequences
+
+=== Positive
+
+* Security-sensitive trust-manager code lives in one place, upstream, where it is reviewed and tested
+  once for every consumer, instead of being reimplemented per project and drifting.
+* The relaxation is narrow and honest: the only property given up is name matching, so a
+  misconfigured or hostile peer presenting an untrusted certificate is still refused.
+* The posture is discoverable at configuration-review time. A reviewer sees `verifyHostname(false)`
+  on a builder, scoped to one client or one JWKS transport, rather than a process-global switch or an
+  opaque custom `SSLContext` whose behaviour cannot be judged from the call site.
+* Because the default is `true` on every builder, existing configurations keep their current
+  behaviour with no migration and no value updates.
+
+=== Negative
+
+* Relaxed hostname verification and caller-supplied trust material cannot be combined. The relaxation
+  applies only to the context the transport derives from the default trust store, so a caller-supplied
+  `SSLContext` leaves nothing to relax. This is an inherited constraint, not a local design choice, and
+  it removes an option some deployments would otherwise reach for.
+* Consequently, any deployment or test that needs *both* relaxed hostname matching and private trust
+  material must steer the JVM default trust store — through `javax.net.ssl.trustStore` and its
+  companions — rather than injecting an `SSLContext`. That mechanism is process-global, so tests using
+  it must isolate themselves and restore prior values.
+* The project's outbound TLS behaviour is now coupled to an upstream API. A change to that API's
+  semantics is a change to this project's security posture.
+
+=== Risks
+
+* The knob is a genuine downgrade when enabled, and its blast radius is every outbound call of the
+  configuring module. The mitigations are that it defaults to `true`, that it is per-configuration
+  rather than global, and that its documentation and Javadoc state unambiguously that it must never be
+  used in production.
+* An upstream change that widened the relaxation from "hostname only" to "chain too" would be a silent
+  security regression here. This is mitigated by a characterization test that pins the upstream
+  properties this project depends on — the default value, the builder round-trip preservation, and the
+  mutual exclusion — so such a change fails as a named assertion rather than as a diffuse TLS failure.
+
+== Temporary dependency pin
+
+The knob is consumed from a `cui-http` snapshot, because no released version exposes it yet. Three
+edits in the root reactor POM carry this, and they are marked as temporary in place: a
+`version.cui.http` property override, a snapshots repository declaration restricted to snapshot
+artifacts, and a `maven-enforcer-plugin` `bannedDependencies` rule bound to `validate` that fails the
+build if any module resolves an older `cui-http`.
+
+The enforcer exists because a silent fallback to the version inherited from the dependency BOM would
+otherwise compile against the pre-knob API and fail obscurely. Its version rule cannot prove the
+resolved artifact actually carries the capability, so the characterization test — which compiles only
+against a `cui-http` exposing `verifyHostname(boolean)` — is the capability-level proof that the
+version rule cannot give.
+
+**Removal condition:** drop all three edits together once a *released* `cui-http` version exposes
+`HttpHandlerBuilder.verifyHostname(boolean)`.
+
+A caveat for whoever performs that removal: a snapshot version string does not identify a build. A
+locally built or locally cached snapshot can differ from what the snapshot repository publishes under
+the same coordinates, so confirming the capability means confirming the API is present, not reading
+the version.
+
+== Alternatives Considered
+
+**Implement a local trust manager.** This project could supply its own `X509ExtendedTrustManager` that
+delegates chain validation to the platform default and omits the name check. It would remove the
+upstream version constraint and the temporary pin entirely. It was rejected because it duplicates
+logic the HTTP library already owns and would drift from it, and because it forces this project to
+re-derive the delegation design that upstream ADR-0007 already settled — taking on maintenance of
+security-critical code as the price of avoiding a dependency bump. The failure mode of a subtle error
+here is silent acceptance of untrusted certificates.
+
+**Use a trust-all `SSLContext`.** The simplest way to make a SAN-mismatched endpoint reachable is a
+trust manager that accepts everything. It was rejected because it does not solve the stated problem:
+it discards chain validation as well as name matching, so it converts a narrow, reviewable relaxation
+into total loss of peer authentication. It is also indistinguishable from a misconfiguration at review
+time — nothing at the call site records that only hostname matching was meant to be relaxed.
+
+**Set the JVM-wide hostname-verification disable property.** The JDK HTTP client honours a
+process-global system property that disables hostname verification. It requires no API surface and no
+dependency change. It was rejected because its blast radius is the entire process rather than one
+configured client or transport: it silently relaxes every outbound HTTPS call any code in the JVM
+makes, including calls made by unrelated libraries. It is also invisible to configuration review,
+living in launch arguments rather than in the configuration object a reviewer reads.
+
+The three rejected options fall into one class: each buys convenience by widening the scope of the
+relaxation — across validation properties, across the process, or across maintenance boundaries — while
+the decision taken keeps the relaxation as narrow as the problem that motivates it, and keeps its
+implementation where it is reviewed once for all consumers.
+
+== References
+
+* `cui-http` ADR-0007 — the upstream delegating trust-manager decision whose rationale this project
+  inherits rather than restates.
+* `token-sheriff-validation/doc/configuration/openid-discovery.adoc` — the validation-side worked
+  configuration example and the admonition stating the mutual exclusion.
+* `token-sheriff-validation/doc/api-reference.adoc` — the published `HttpJwksLoaderConfigBuilder`
+  signature listing.
+* `token-sheriff-client/README.adoc` — the client-side quick-start documenting the knob and its
+  reciprocal exclusion with per-client trust material.
+* `doc/client/requirements.adoc` — CLIENT-23, which carries the normative build-time refusal
+  requirement for the incompatible combination.

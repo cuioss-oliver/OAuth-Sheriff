@@ -58,6 +58,12 @@ import java.util.concurrent.ConcurrentMap;
  *       five endpoint clients sharing one {@code ClientConfiguration} trust the same authorization
  *       server, without a process-global {@code javax.net.ssl.trustStore} override. When absent, the
  *       cui-http / JVM default truststore is used.</li>
+ *   <li><strong>Hostname verification:</strong> {@link ClientConfiguration#verifyHostname} is forwarded
+ *       onto every endpoint handler this helper produces. It defaults to {@code true}; setting it to
+ *       {@code false} relaxes hostname matching only, leaving chain trust, expiry, and algorithm
+ *       constraints enforced. It is mutually exclusive with the per-client TLS trust above — the two are
+ *       rejected together at {@link ClientConfiguration} build time, so that guard, not the
+ *       {@code catch} / {@link TransportException} path below, is what refuses the combination.</li>
  *   <li><strong>Consistent transport typing (M9):</strong> a malformed or non-TLS endpoint surfaces as
  *       the declared {@link TransportException}, never a raw {@link IllegalArgumentException} leaking
  *       from {@code HttpHandler.build()}.</li>
@@ -131,7 +137,8 @@ public final class BackChannelHttp {
                     .url(endpointUrl)
                     .connectionTimeoutSeconds(configuration.getConnectTimeoutSeconds())
                     .readTimeoutSeconds(configuration.getReadTimeoutSeconds())
-                    .allowInsecureHttp(configuration.isAllowInsecureHttp());
+                    .allowInsecureHttp(configuration.isAllowInsecureHttp())
+                    .verifyHostname(configuration.isVerifyHostname());
             SSLContext sslContext = configuration.getSslContext();
             if (sslContext != null) {
                 builder.sslContext(sslContext);

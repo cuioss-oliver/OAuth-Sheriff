@@ -91,6 +91,12 @@ NOTE: The scope is this client engine only. JWKS retrieval for token *validation
 `HttpJwksLoaderConfig`, which carries its own independent `sslContext()`. Against a private-CA
 authorization server, configure both — otherwise token retrieval succeeds and validation then
 fails the JWKS fetch with a PKIX error.
++
+NOTE: `sslContext` cannot be combined with `verifyHostname(false)` (see below). The hostname
+relaxation applies only to the default-trust-store context the transport derives, so a
+caller-supplied context leaves nothing to relax; `build()` rejects the pair with an
+`IllegalArgumentException`. Choose per-client trust material *or* relaxed hostname matching, never
+both.
 
 <2> Optional. The byte ceiling for the authorization server's discovery document, enforced during
 the read. Defaults to 64 KiB — a ceiling sized for a discovery document rather than borrowed from
@@ -98,6 +104,42 @@ the 8 KiB JWT payload bound, which an ordinary Keycloak realm already exceeds. R
 authorization server whose `.well-known/openid-configuration` is larger still; it bounds how much
 of that response is buffered, so keep it as tight as the deployment's actual documents allow. Under
 Quarkus the same knob is `sheriff.client.discovery-document-max-size`.
+
+=== Relaxing hostname verification (local/dev only)
+
+For a local or containerised authorization server reached by a name its certificate was never issued
+for, hostname matching can be relaxed on its own. This is a *separate* configuration from the one
+above — it deliberately does not supply `sslContext`, because the two are mutually exclusive:
+
+[source,java]
+----
+ClientConfiguration config = ClientConfiguration.builder()
+    .issuer("https://keycloak:8443/realms/demo")
+    .clientId("my-confidential-client")
+    .clientSecret(secret)
+    .authMethod(ClientAuthMethod.CLIENT_SECRET_BASIC)
+    .scope("openid")
+    .verifyHostname(false) // <1>
+    .build();
+----
+<1> Optional. Defaults to `true`. Setting it to `false` relaxes *hostname matching only* — certificate
+chain trust, expiry, and algorithm constraints all remain fully enforced, so an untrusted or expired
+certificate is still refused. It applies to every discovery and back-channel call this client makes.
+It is independent of `allowInsecureHttp`, which governs the URL *scheme* rather than certificate
+matching.
++
+WARNING: Never use `verifyHostname(false)` in production. Disabling hostname verification removes the
+guarantee that the certificate presented belongs to the host actually contacted, which re-opens the
+man-in-the-middle vector that chain validation alone does not close. It exists for local development
+and test topologies serving SAN-mismatched certificates.
++
+NOTE: It cannot be combined with `sslContext` — `build()` rejects the pair with an
+`IllegalArgumentException`. With hostname verification relaxed, trust material therefore comes
+exclusively from the JVM default trust store (`javax.net.ssl.trustStore` and its companions), not
+per-client. The validation side carries the same knob on `HttpJwksLoaderConfig`, under the same
+constraint; against such a server, configure both. See
+xref:../doc/adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008]
+for the decision and its rationale.
 
 Endpoints are resolved via OIDC discovery against
 `{issuer}/.well-known/openid-configuration`. See the

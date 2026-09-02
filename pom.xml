@@ -49,6 +49,48 @@
         <version.quarkus>3.39.1</version.quarkus>
         <frontend.node.version>v22.22.0</frontend.node.version>
         <frontend.npm.version>10.9.2</frontend.npm.version>
+        <!-- TEMPORARY: overrides the 2.1.0 value inherited from de.cuioss:cui-java-bom so this
+             project can consume the verifyHostname knob from cui-http PR #167 ahead of its release.
+             No <repositories> declaration is needed alongside it: de.cuioss:cui-parent-pom already
+             declares the sonatype-snapshots repository pointing at
+             https://central.sonatype.com/repository/maven-snapshots/ with snapshots enabled, and
+             this project inherits it through cui-java-parent -> cui-java-bom -> cui-parent-pom.
+             REMOVAL CONDITION: drop this property override and the maven-enforcer-plugin execution
+             below together once cui-http ships a release carrying PR #167. -->
+        <version.cui.http>2.2-SNAPSHOT</version.cui.http>
     </properties>
+
+    <build>
+        <plugins>
+            <!-- TEMPORARY: fails the build at validate when any module resolves a cui-http older
+                 than 2.2-SNAPSHOT, so a silent fallback to the BOM-inherited 2.1.0 surfaces as a
+                 banned-dependency error rather than compiling green against the pre-PR-#167 API.
+                 REMOVAL CONDITION: drop this execution and the version.cui.http property override
+                 together once cui-http ships a release carrying PR #167. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.3</version>
+                <executions>
+                    <execution>
+                        <id>ban-pre-verify-hostname-cui-http</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>de.cuioss:cui-http:(,2.2-SNAPSHOT)</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>

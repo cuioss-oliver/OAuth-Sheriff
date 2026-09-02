@@ -123,6 +123,32 @@ public class ClientConfiguration {
     boolean allowInsecureHttp;
 
     /**
+     * Whether TLS hostname verification is performed for every outbound discovery and back-channel
+     * call. Defaults to {@code true}, so the certificate presented must match the host contacted.
+     * <p>
+     * Setting this to {@code false} relaxes <strong>hostname matching only</strong>: certificate chain
+     * trust, expiry, and algorithm constraints all remain fully enforced, so an untrusted or expired
+     * certificate is still rejected.
+     * <p>
+     * This field is mutually exclusive with {@link #sslContext}. The relaxation applies only to the
+     * default-trust-store context the underlying HTTP handler derives, so a caller-supplied context
+     * leaves nothing to relax; the constructor rejects the combination with an
+     * {@link IllegalArgumentException}. When verification is disabled, trust material must therefore be
+     * supplied through the JVM default trust store rather than per-client.
+     * <p>
+     * It is independent of {@link #allowInsecureHttp}, which governs the URL <em>scheme</em> rather than
+     * certificate matching; the two axes may be set in any combination that does not also set
+     * {@link #sslContext}.
+     * <p>
+     * <strong>Never set this to {@code false} in production.</strong> Disabling hostname verification
+     * removes the guarantee that the certificate presented belongs to the host actually contacted, which
+     * re-opens the man-in-the-middle vector that chain validation alone does not close. It exists for
+     * local development and test topologies serving SAN-mismatched certificates.
+     */
+    @Builder.Default
+    boolean verifyHostname = true;
+
+    /**
      * The TCP connect timeout, in seconds, applied to every outbound discovery and back-channel call.
      * Defaults to {@value #DEFAULT_CONNECT_TIMEOUT_SECONDS} seconds. Configurable so deployments behind
      * slow networks or in latency-sensitive paths can tune the transport rather than relying on a
@@ -240,7 +266,7 @@ public class ClientConfiguration {
     @SuppressWarnings("java:S107")
     ClientConfiguration(@NonNull String issuer, @NonNull String clientId, @Nullable String clientSecret,
             @NonNull ClientAuthMethod authMethod, List<String> scopes, @Nullable String redirectUri,
-            boolean allowInsecureHttp, int connectTimeoutSeconds, int readTimeoutSeconds,
+            boolean allowInsecureHttp, boolean verifyHostname, int connectTimeoutSeconds, int readTimeoutSeconds,
             int discoveryDocumentMaxSize, @Nullable SSLContext sslContext,
             boolean strictScopeReconciliation) {
         this.issuer = requireNonBlank(issuer, "issuer");
@@ -254,6 +280,19 @@ public class ClientConfiguration {
         this.connectTimeoutSeconds = requirePositive(connectTimeoutSeconds, "connectTimeoutSeconds");
         this.readTimeoutSeconds = requirePositive(readTimeoutSeconds, "readTimeoutSeconds");
         this.discoveryDocumentMaxSize = requirePositive(discoveryDocumentMaxSize, "discoveryDocumentMaxSize");
+        // Fail fast here rather than at the first token exchange. BackChannelHttp's validatedHandler
+        // applies a caller-supplied sslContext inside an exception handler that rewraps the failure
+        // as a TransportException, so without this guard an incompatible configuration would build
+        // cleanly and only surface later as a transport failure rather than the configuration error
+        // it actually is.
+        if (sslContext != null && !verifyHostname) {
+            throw new IllegalArgumentException(
+                    "verifyHostname(false) cannot be combined with sslContext(...). The hostname relaxation applies "
+                            + "only to the default-trust-store context the HTTP handler derives, so a caller-supplied "
+                            + "context leaves nothing to relax. Either drop sslContext(...) and supply trust through "
+                            + "the JVM default trust store, or keep verifyHostname(true).");
+        }
+        this.verifyHostname = verifyHostname;
         // No validation: null means "use the cui-http / JVM default truststore", the unconfigured default.
         this.sslContext = sslContext;
         // No validation: a boolean has no invalid value.
