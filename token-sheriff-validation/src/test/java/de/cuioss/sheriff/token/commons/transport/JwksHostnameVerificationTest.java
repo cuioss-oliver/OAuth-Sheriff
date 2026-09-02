@@ -142,7 +142,7 @@ class JwksHostnameVerificationTest {
         // Assert — it must fail ON HOSTNAME, not because the chain was untrusted
         String causes = causeChain(failure);
         assertTrue(causes.contains("subject alternative") || causes.contains("no match")
-                        || causes.contains("doesn't match") || causes.contains("does not match"),
+                || causes.contains("doesn't match") || causes.contains("does not match"),
                 "the rejection must be a hostname mismatch, but the cause chain was: " + causes);
         assertFalse(causes.contains("pkix path building failed"),
                 "the served certificate is trusted, so this must not fail as an untrusted chain: " + causes);

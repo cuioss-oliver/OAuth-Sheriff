@@ -22,7 +22,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.net.ssl.SSLContext;
-import java.security.NoSuchAlgorithmException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -88,7 +87,7 @@ class HttpHandlerVerifyHostnameContractTest {
 
     @Test
     @DisplayName("Should reject verifyHostname(false) combined with a caller-supplied sslContext")
-    void shouldRejectVerifyHostnameFalseWithCallerSuppliedSslContext() throws NoSuchAlgorithmException {
+    void shouldRejectVerifyHostnameFalseWithCallerSuppliedSslContext() throws Exception {
         // Arrange
         SSLContext callerSupplied = SSLContext.getDefault();
         var builder = HttpHandler.builder()
