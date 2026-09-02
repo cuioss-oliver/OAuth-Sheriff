@@ -85,9 +85,17 @@ HttpJwksLoaderConfig jwksConfig = HttpJwksLoaderConfig.builder()
     .refreshIntervalSeconds(300)
     .connectTimeoutSeconds(30)
     .readTimeoutSeconds(60)
+    .allowedEgressHost("keycloak")    // Local/dev only — see the note below
     .verifyHostname(false)    // Local/dev only — see the warning below
     .build();
 ----
+
+NOTE: The `allowedEgressHost` call is required for this example to work, and is a *separate* control
+from `verifyHostname`. A container name such as `keycloak` resolves to a private bridge address, which
+the egress policy rejects *before* the TLS handshake — and therefore before hostname verification is
+ever reached. Relaxing hostname matching alone would leave the fetch blocked at the earlier gate.
+`allowedEgressHost` governs *where* a JWKS fetch may go; `verifyHostname` governs *whether the
+certificate's name must match*. Both are development-only opt-ins, and neither implies the other.
 
 WARNING: `verifyHostname` defaults to `true`. Setting it to `false` relaxes *hostname matching only* —
 certificate chain trust, expiry, and algorithm constraints all remain fully enforced, so an untrusted
