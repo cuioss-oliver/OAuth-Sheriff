@@ -131,7 +131,7 @@ class RedeemedRefreshFailureTest {
 
     @Test
     @DisplayName("Should not carry live token material across a serialization boundary, and stay fail-closed when it did not")
-    void shouldNotSerializeTheSuccessor() throws Exception {
+    void shouldNotSerializeTheSuccessor() throws IOException, ClassNotFoundException {
         String successor = Generators.letterStrings(20, 40).next();
 
         var scopeRefusal = new RedeemedScopeRefusalException("refused",
