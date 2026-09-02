@@ -151,6 +151,36 @@ class TokenSheriffClientProducerTest {
                     "sheriff.client.strict-scope-reconciliation=true must reach the engine configuration");
         }
 
+        // Hostname verification is a matched pair for the same reason, with one addition: its secure
+        // default is TRUE, inverted relative to every neighbouring boolean on this surface
+        // (allow-insecure-http, strict-scope-reconciliation) whose secure default is FALSE. A mapper
+        // entry that copies a sibling's `.orElse(Boolean.FALSE)` silently disables hostname
+        // verification for every outbound call, compiles cleanly, and passes every other test in this
+        // file. The negative half below — the property omitted — is the only control that catches it.
+
+        @Test
+        @DisplayName("Should keep hostname verification enforced when the property is absent")
+        void shouldDefaultVerifyHostnameToEnforced() {
+            ClientConfiguration configuration =
+                    new TokenSheriffClientProducer(configOf(minimalClientProperties())).clientConfiguration();
+
+            assertTrue(configuration.isVerifyHostname(),
+                    "omitting the property must leave hostname verification enforced, never silently relaxed");
+        }
+
+        @Test
+        @DisplayName("Should map disabled hostname verification onto the engine configuration")
+        void shouldMapDisabledVerifyHostname() {
+            Map<String, String> properties = minimalClientProperties();
+            properties.put(ClientRuntimeConfig.VERIFY_HOSTNAME, "false");
+
+            ClientConfiguration configuration =
+                    new TokenSheriffClientProducer(configOf(properties)).clientConfiguration();
+
+            assertFalse(configuration.isVerifyHostname(),
+                    "sheriff.client.verify-hostname=false must reach the engine configuration");
+        }
+
         @Test
         @DisplayName("Should fail loud when the client extension is present but not configured")
         void shouldFailWhenUnconfigured() {

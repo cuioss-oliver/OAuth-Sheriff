@@ -77,6 +77,11 @@ public final class ClientConfigMapper {
                 .authMethod(resolveAuthMethod(config))
                 .allowInsecureHttp(config.getOptionalValue(ClientRuntimeConfig.ALLOW_INSECURE_HTTP, Boolean.class)
                         .orElse(Boolean.FALSE))
+                // Secure-by-default: absent property means hostname verification stays ON, mirroring
+                // ClientConfiguration's verifyHostname default. Note the polarity differs from the
+                // allow-insecure-http entry above, whose secure default is FALSE.
+                .verifyHostname(config.getOptionalValue(ClientRuntimeConfig.VERIFY_HOSTNAME, Boolean.class)
+                        .orElse(Boolean.TRUE))
                 .strictScopeReconciliation(
                         config.getOptionalValue(ClientRuntimeConfig.STRICT_SCOPE_RECONCILIATION, Boolean.class)
                                 .orElse(Boolean.FALSE));
