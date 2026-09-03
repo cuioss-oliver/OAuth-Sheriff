@@ -157,7 +157,7 @@ class BackChannelHostnameVerificationTest {
                 context.state(), null, null, null);
         try {
             flow(config).exchange(metadataWithTokenEndpoint(uriBuilder), context, callback, auth(config));
-        } catch (RuntimeException ignored) {
+        } catch (TransportException ignored) {
             // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
             // whole point; the outcome carries no information and is deliberately discarded.
         }
