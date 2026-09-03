@@ -161,6 +161,33 @@ class BackChannelHostnameVerificationTest {
             // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
             // whole point; the outcome carries no information and is deliberately discarded.
         }
+        abortIfInterrupted();
+    }
+
+    /**
+     * Aborts the current test as no-verdict when the pre-warm exchange left the interrupt status set on
+     * this thread.
+     * <p>
+     * The interrupt arrives here by a route that is invisible at the call site above: {@code
+     * TokenEndpointClient} catches {@link InterruptedException} from {@code HttpClient.send(...)},
+     * restores the interrupt status, and rethrows it wrapped as a {@link TransportException} — which the
+     * pre-warm deliberately discards along with every other warm-up outcome. The restored flag outlives
+     * that discard. Because {@code HttpClient.send(...)} inspects the calling thread's interrupt status
+     * on entry and JUnit runs the assertion-bearing methods on the same thread, the flag would make the
+     * positive control's own exchange fail before any TLS decision is reached — a thread-lifecycle
+     * artefact reported as a hostname-verification failure that never happened. The interrupt status is
+     * therefore left set, for whoever owns this thread, and the test reports "no verdict" ({@link
+     * Assumptions#abort(String)}) rather than "failed", mirroring the timeout discrimination in
+     * {@link #exchangeDiscriminatingTimeouts(ClientConfiguration, ProviderMetadata, FlowContext,
+     * CallbackParameters)}.
+     */
+    private static void abortIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            Assumptions.abort("the TLS pre-warm exchange was interrupted, leaving the interrupt status set on "
+                    + "this test thread; HttpClient.send(...) would throw InterruptedException on entry before "
+                    + "reaching any TLS decision. That is a thread-lifecycle artefact, not evidence about "
+                    + "hostname verification.");
+        }
     }
 
     @AfterEach
