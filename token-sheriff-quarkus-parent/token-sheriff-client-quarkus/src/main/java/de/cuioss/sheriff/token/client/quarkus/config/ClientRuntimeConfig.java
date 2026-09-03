@@ -85,14 +85,11 @@ public final class ClientRuntimeConfig {
      * Whether TLS hostname verification is enforced for this client's outbound calls. Property:
      * {@code sheriff.client.verify-hostname}. Defaults to {@code true}.
      * <p>
-     * <strong>Security note.</strong> The setting is client-wide: it applies to <em>every</em> outbound
-     * discovery and back-channel call this client makes (discovery, token, userinfo, revocation, PAR),
-     * not to a single endpoint. Setting it to {@code false} relaxes <strong>hostname matching
-     * only</strong> — certificate chain trust, expiry, and algorithm constraints all remain fully
-     * enforced, so an untrusted or expired certificate is still rejected. It cannot be combined with a
-     * caller-supplied {@code SSLContext}; when verification is disabled, trust material must therefore
-     * come from the JVM default trust store rather than per-client. The legitimate topologies are local
-     * development and CI serving SAN-mismatched certificates — never production.
+     * Client-wide — applies to every outbound discovery and back-channel call this client makes.
+     * Setting it to {@code false} relaxes <strong>hostname matching only</strong>; certificate chain
+     * trust, expiry, and algorithm constraints remain fully enforced. Never set it to {@code false}
+     * in production. See {@link de.cuioss.sheriff.token.client.config.ClientConfiguration#isVerifyHostname()}
+     * for the {@code SSLContext} mutual-exclusion constraint.
      *
      * @see de.cuioss.sheriff.token.client.config.ClientConfiguration#isVerifyHostname()
      * @see <a href=
