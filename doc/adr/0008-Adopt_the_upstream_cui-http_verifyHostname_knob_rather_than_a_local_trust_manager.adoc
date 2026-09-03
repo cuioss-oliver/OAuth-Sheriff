@@ -101,33 +101,25 @@ that rationale rather than restating or re-deriving it.
   properties this project depends on — the default value, the builder round-trip preservation, and the
   mutual exclusion — so such a change fails as a named assertion rather than as a diffuse TLS failure.
 
-== Temporary dependency pin
+== Dependency floor
 
-The knob is consumed from a `cui-http` snapshot, because no released version exposes it yet. Three
-edits in the root reactor POM carry this, and they are marked as temporary in place: a
-`version.cui.http` property override, a snapshots repository declaration restricted to snapshot
-artifacts, and a `maven-enforcer-plugin` `bannedDependencies` rule bound to `validate` that fails the
-build if any module resolves an older `cui-http`.
+The knob requires `cui-http` 2.2 or newer — the release that first exposes
+`HttpHandlerBuilder.verifyHostname(boolean)`. The version is inherited from `de.cuioss:cui-java-bom`
+through this project's parent, with no override in the reactor POM: there is a single source of truth
+for it, and raising the floor is an upstream BOM concern rather than a build-file one here.
 
-The enforcer exists because a silent fallback to the version inherited from the dependency BOM would
-otherwise compile against the pre-knob API and fail obscurely. Its version rule cannot prove the
-resolved artifact actually carries the capability, so the characterization test — which compiles only
-against a `cui-http` exposing `verifyHostname(boolean)` — is the capability-level proof that the
-version rule cannot give.
-
-**Removal condition:** drop all three edits together once a *released* `cui-http` version exposes
-`HttpHandlerBuilder.verifyHostname(boolean)`.
-
-A caveat for whoever performs that removal: a snapshot version string does not identify a build. A
-locally built or locally cached snapshot can differ from what the snapshot repository publishes under
-the same coordinates, so confirming the capability means confirming the API is present, not reading
-the version.
+No build-level version guard accompanies it, deliberately. A version rule can assert a coordinate but
+never that the artifact behind it carries the capability, so the guard that matters is the
+characterization test: `HttpHandlerVerifyHostnameContractTest` compiles only against a `cui-http`
+exposing `verifyHostname(boolean)`, and pins the upstream properties this project builds on. A
+downgrade or an upstream API change therefore fails as a named assertion rather than as a diffuse TLS
+failure — and it fails on the capability itself rather than on a version string standing in for it.
 
 == Alternatives Considered
 
 **Implement a local trust manager.** This project could supply its own `X509ExtendedTrustManager` that
 delegates chain validation to the platform default and omits the name check. It would remove the
-upstream version constraint and the temporary pin entirely. It was rejected because it duplicates
+upstream version floor entirely. It was rejected because it duplicates
 logic the HTTP library already owns and would drift from it, and because it forces this project to
 re-derive the delegation design that upstream ADR-0007 already settled — taking on maintenance of
 security-critical code as the price of avoiding a dependency bump. The failure mode of a subtle error

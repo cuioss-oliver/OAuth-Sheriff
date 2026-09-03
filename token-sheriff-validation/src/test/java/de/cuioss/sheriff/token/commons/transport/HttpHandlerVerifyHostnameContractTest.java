@@ -34,10 +34,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * {@code cui-http} upgrade changes any of them, it breaks here with a named assertion instead of
  * surfacing downstream as a diffuse TLS handshake failure across two modules.
  * <p>
- * The class also serves as the capability-level proof that the temporary {@code cui-http}
- * {@code 2.2-SNAPSHOT} pin resolved an artifact carrying PR #167: it only compiles against a
- * {@code cui-http} that exposes {@code HttpHandlerBuilder.verifyHostname(boolean)}, which is the
- * proof the enforcer's version-string rule cannot give.
+ * The class also serves as the capability-level proof of the dependency floor: it only compiles
+ * against a {@code cui-http} that exposes {@code HttpHandlerBuilder.verifyHostname(boolean)}, which
+ * is a proof no build-level version rule can give — a version string names a coordinate, not the API
+ * the artifact behind it actually carries.
  *
  * @since 1.0
  */
