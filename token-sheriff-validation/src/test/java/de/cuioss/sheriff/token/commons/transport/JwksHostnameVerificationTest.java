@@ -137,6 +137,30 @@ class JwksHostnameVerificationTest {
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
+        abortIfInterrupted();
+    }
+
+    /**
+     * Aborts the current test as no-verdict when the pre-warm handshake left the interrupt status set on
+     * this thread.
+     * <p>
+     * Restoring the interrupt status is the correct response to an {@link InterruptedException} the
+     * fixture does not own, but it is only half the story: {@code HttpClient.send(...)} inspects the
+     * calling thread's interrupt status on entry and throws {@link InterruptedException} immediately when
+     * it is already set. JUnit runs the assertion-bearing methods on the same thread, so a flag restored
+     * here would make the positive control's own fetch fail before any TLS decision is reached — a thread
+     * lifecycle artefact reported as a hostname-verification failure that never happened. The interrupt
+     * status is therefore left set, for whoever owns this thread, and the test reports "no verdict"
+     * ({@link Assumptions#abort(String)}) rather than "failed", mirroring the timeout discrimination in
+     * {@link #fetchDiscriminatingTimeouts(HttpHandler)}.
+     */
+    private static void abortIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            Assumptions.abort("the TLS pre-warm handshake was interrupted, leaving the interrupt status set on "
+                    + "this test thread; HttpClient.send(...) would throw InterruptedException on entry before "
+                    + "reaching any TLS decision. That is a thread-lifecycle artefact, not evidence about "
+                    + "hostname verification.");
+        }
     }
 
     @AfterEach
