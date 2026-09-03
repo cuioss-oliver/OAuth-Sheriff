@@ -130,7 +130,7 @@ class JwksHostnameVerificationTest {
     private static void preWarmTlsStack(URIBuilder uriBuilder) {
         try {
             fetch(handlerFor(uriBuilder, null));
-        } catch (IOException | RuntimeException ignored) {
+        } catch (IOException ignored) {
             // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
             // whole point; the outcome carries no information and is deliberately discarded.
         } catch (InterruptedException ignored) {
