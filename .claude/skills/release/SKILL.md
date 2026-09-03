@@ -44,13 +44,18 @@ Observed timings (use these as the basis for the waits below):
 
 ### Step 1 — Determine the version number
 
-Read the current release block. `.github/project.yml` holds both numbers under `release`:
-- `release.current-version` (e.g. `0.9.0`)
-- `release.next-version` (e.g. `1.0.0-SNAPSHOT`)
+`.github/project.yml` is the single source of truth for both versions — read it, never
+assume:
 
-**Default rule:** the release version is `next-version` with `-SNAPSHOT` stripped (e.g.
-`1.0.0-SNAPSHOT` → `1.0.0`). The new `next-version` is the next bump plus `-SNAPSHOT`
-(e.g. `1.1.0-SNAPSHOT`).
+```bash
+grep -E 'current-version|next-version' .github/project.yml
+```
+
+- `release.current-version` — the **last released** version.
+- `release.next-version` — what `pom.xml` carries between releases.
+
+**Default rule:** the release version is `next-version` with `-SNAPSHOT` stripped. The new
+`next-version` is the next bump plus `-SNAPSHOT`.
 
 **Ask the user** (AskUserQuestion) only if in doubt — e.g. the numbers don't follow the
 expected pattern, a patch/major release is plausible, or `current-version` and `next-version`
@@ -111,14 +116,14 @@ Branch name uses the `chore/` prefix (required — the Maven CI workflow only tr
 `build` check and block auto-merge):
 
 ```bash
-git checkout -b chore/release_<version>   # e.g. chore/release_1.0.0
+git checkout -b chore/release_<version>
 ```
 
 ### Step 5 — Update `.github/project.yml`
 
 Edit the `release` block:
-- `current-version:` → the version determined in Step 1 (e.g. `1.0.0`)
-- `next-version:` → next bump + `-SNAPSHOT` (e.g. `1.1.0-SNAPSHOT`)
+- `current-version:` → the version determined in Step 1
+- `next-version:` → next bump + `-SNAPSHOT`
 
 Leave everything else untouched.
 
@@ -229,8 +234,24 @@ not in the original.
 
 #### House format rules (apply exactly)
 
-1. **Two top-level groups:** `## Features & Enhancements` and `## Dependency Updates`.
-2. **Features & Enhancements** — group functional PRs by theme with `###` subheadings, e.g.:
+1. **Three top-level groups, in this order:** `## Quarkus`,
+   `## Features & Enhancements`, and `## Dependency Updates`.
+2. **Quarkus is the headline** — the Quarkus platform version is the single most
+   important fact in a release, so it gets its **own top-level section at the very top**,
+   never a bullet buried under dependency updates. Open it with a one-line statement of the
+   target version, then the PR line(s):
+
+   ```
+   ## Quarkus
+
+   This release targets **Quarkus <new>** (previously <old>).
+
+   * <PR line(s)>
+   ```
+
+   If Quarkus did **not** change in this cycle, state the unchanged version in the same
+   one-line form and omit the PR line. Never also list Quarkus under `### Java`.
+3. **Features & Enhancements** — group functional PRs by theme with `###` subheadings, e.g.:
    - `### API & Code Quality` — also the home for refactor/standards/cleanup recipes
      (e.g. `refactor-to-profile-standards`, requirement-ID renames), **not** under build/tooling
    - `### Security`
@@ -241,8 +262,9 @@ not in the original.
    Add release-specific themes when the cycle has a dominant thread (e.g. a
    `### Rebrand: OAuth-Sheriff → Token-Sheriff` group). Adapt headings to the actual PRs;
    omit empty sections.
-3. **Dependency Updates** — group by type with `###` subheadings:
-   - `### Java` — Java libraries (e.g. Quarkus, gson, commons-io, microprofile-jwt-auth-api)
+4. **Dependency Updates** — group by type with `###` subheadings:
+   - `### Java` — Java libraries (e.g. gson, commons-io, microprofile-jwt-auth-api).
+     **Not** Quarkus — that has its own top section (rule 2).
    - `### JavaScript` — npm deps under
      `token-sheriff-quarkus-parent/token-sheriff-validation-quarkus-deployment` and
      `token-sheriff-quarkus-parent/e-2-e-playwright` (eslint, prettier, stylelint, jest, babel,
@@ -251,21 +273,54 @@ not in the original.
    - `### Infra` — platform/build/CI: build plugins (e.g. frontend-maven-plugin), GitHub Action
      bumps (claude-code-action, harden-runner, actions/*), cui-java-parent, and
      cuioss-organization workflow bumps
-4. **Collapse version chains** — when the same artifact is bumped multiple times (`A → B → C`),
-   keep only the **latest** entry spanning the full range, using the latest PR's URL/author
-   (e.g. `version.quarkus 3.34.2 → 3.35.0 → 3.37.0` becomes a single `3.34.2 to 3.37.0`).
-   This matters a lot here — `anthropics/claude-code-action` and `step-security/harden-runner`
-   are bumped dozens of times per cycle; collapse each to one Infra line.
-5. **Remove all OpenRewrite bumps and friends** — drop every `rewrite-maven-plugin`,
+5. **Collapse by library identity — one line per library, spanning the full range.**
+   The unit of collapsing is the *library*, not the PR title. Merge into a single line
+   whenever the PRs concern the same library, in all three shapes that occur:
+   - **Version chains** — several bumps of one artifact (`A → B → C`) collapse to one line
+     spanning `A → C`, carrying the latest PR's author.
+   - **The same library in several places** — one library bumped in more than one module or
+     directory is **one** line naming them all, not one line each. Those titles differ only
+     by that suffix, so do not wait for identical titles before merging.
+   - **One upstream release landing as several coordinates** — when a single upstream bump
+     arrives as separate PRs against different coordinates (e.g. a version property *and*
+     a BOM or parent), that is **one** bump: one line naming the coordinates in parentheses.
+
+   Carry every merged PR's URL onto the surviving line, comma-separated.
+6. **Recover versions the title omits.** Dependabot truncates a title to
+   `bump <lib> in /<dir>`, with no versions, when several dependencies must move together.
+   Never publish a dependency line without a version range: read the PR body, which states
+   ``Updates `<lib>` from X to Y``, and use those versions when computing the range:
+
+   ```bash
+   gh pr view <n> --repo cuioss/TokenSheriff --json body --jq .body | head -6
+   ```
+7. **Remove all OpenRewrite bumps and friends** — drop every `rewrite-maven-plugin`,
    `rewrite-migrate-java`, `rewrite-testing-frameworks`, and related OpenRewrite dependency PR.
-6. **Remove internal tooling churn** — drop PRs that only touch dev/build orchestration with no
+8. **Remove internal tooling churn** — drop PRs that only touch dev/build orchestration with no
    user-facing effect: `marshal.json`/plan-marshall config migrations, plan-marshall build
    wiring, internal dev-skill changes, and **the mechanical version-bump PR itself**
    (`chore(release): prepare release <version>` / `release: cut … <version>`).
-7. Preserve each kept PR line verbatim (`* <title> by @author in <url>`); when two PRs share an
-   identical title, merge them onto one line with both URLs. For collapsed chains, keep the
-   latest PR's line and adjust only the version span.
-8. Keep the trailing `**Full Changelog**: ...compare/<prev>...<version>` line.
+9. **Preserve each kept PR line** in its original
+   `* <title> by @author in <url>` shape. Rules 5 and 6 **override** verbatimness where
+   they conflict: rewrite the title's version range to span the collapsed chain, and name
+   the several modules or coordinates on the surviving line.
+10. Keep the trailing `**Full Changelog**: ...compare/<prev>...<version>` line.
+
+#### Verify before publishing (mandatory)
+
+These rules are easy to under-apply: a duplicate survives whenever two PRs touch the same
+library under differing titles. After building the notes file and **before**
+`gh release edit`, assert that every library appears exactly once:
+
+```bash
+grep -oE '(bump|update) [^ ]+ (from|in)' .plan/temp/release-<version>.md \
+  | sort | uniq -c | sort -rn | head
+```
+
+Every count must be `1`. Any count `>1` is an unmerged duplicate — collapse it per rule
+5 and re-run. Also confirm that no dependency line is missing a version range
+(rule 6).
+
 
 ### Step 14 — Done
 
