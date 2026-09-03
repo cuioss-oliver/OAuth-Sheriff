@@ -110,9 +110,32 @@ class JwksHostnameVerificationTest {
     private Map<String, String> savedTrustStoreProperties;
 
     @BeforeEach
-    void setUp() {
+    void setUp(URIBuilder uriBuilder) {
+        preWarmTlsStack(uriBuilder);
         moduleDispatcher.setCallCounter(0);
         savedTrustStoreProperties = null;
+    }
+
+    /**
+     * Performs one throwaway HTTPS handshake against the mock server under the default posture, with no
+     * trust store installed, and discards the outcome.
+     * <p>
+     * The call exists only so the JVM's TLS machinery — provider initialisation, class loading and
+     * {@code SecureRandom} seeding — is already warm before any assertion-bearing fetch runs. Without it
+     * the first handshake in the JVM absorbs that one-off cost, and on a loaded machine it can exceed the
+     * transport timeout, so the fixture's verdict would report machine load rather than the TLS outcome
+     * under test. Sequenced before {@code setCallCounter(0)} so the counter every control asserts on is
+     * zeroed after this warm-up, whatever it did.
+     */
+    private static void preWarmTlsStack(URIBuilder uriBuilder) {
+        try {
+            fetch(handlerFor(uriBuilder, null));
+        } catch (IOException | RuntimeException ignored) {
+            // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
+            // whole point; the outcome carries no information and is deliberately discarded.
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @AfterEach
@@ -156,7 +179,7 @@ class JwksHostnameVerificationTest {
         HttpHandler handler = handlerFor(uriBuilder, false);
 
         // Act
-        HttpResponse<String> response = fetch(handler);
+        HttpResponse<String> response = fetchDiscriminatingTimeouts(handler);
 
         // Assert
         assertEquals(200, response.statusCode(), "the JWKS fetch must succeed once hostname matching is relaxed");
@@ -212,6 +235,29 @@ class JwksHostnameVerificationTest {
 
     private static HttpResponse<String> fetch(HttpHandler handler) throws IOException, InterruptedException {
         return handler.send(handler.requestBuilder().GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Fetches as {@link #fetch(HttpHandler)} does, but names a timeout for what it is before the failure
+     * can be read as a verification outcome.
+     * <p>
+     * This guards the positive control: an escaping {@link IOException} is only meaningful here if it
+     * came from the TLS decision under test. A connect or read timeout is also an {@code IOException},
+     * so without this discrimination a slow machine would fail the control with a message that looks
+     * like "hostname relaxation did not take effect". Any non-timeout failure is rethrown untouched so
+     * the real cause still surfaces.
+     */
+    private static HttpResponse<String> fetchDiscriminatingTimeouts(HttpHandler handler)
+            throws IOException, InterruptedException {
+        try {
+            return fetch(handler);
+        } catch (IOException failure) {
+            String causes = causeChain(failure);
+            assertFalse(causes.contains("timed out") || causes.contains("timeout"),
+                    "the fetch timed out rather than reaching a TLS verification outcome; this is a machine-load "
+                            + "artefact, not evidence about hostname relaxation. Cause chain was: " + causes);
+            throw failure;
+        }
     }
 
     /** Flattens a throwable's cause chain into one lower-cased string for message-shape assertions. */
