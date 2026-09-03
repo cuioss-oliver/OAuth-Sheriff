@@ -46,6 +46,17 @@ Every outbound request uses TLS 1.2+ with certificate validation, configured cen
 `cui-http`'s `SecureSSLContextProvider`. Plain-HTTP endpoints are rejected. Mitigates
 xref:../threat-model.adoc#T-TLS[T-TLS].
 
+Certificate validation is unconditional in its chain-trust, expiry and algorithm-constraint
+components. Hostname matching is the one qualified part: it is ON by default and a deployment may
+relax it by explicit opt-in, per the carve-out in
+xref:../requirements.adoc#COMMONS-2[COMMONS-2]. Relaxing it narrows hostname matching *only* — an
+untrusted or expired certificate is still rejected — and it is reachable from two configuration
+surfaces: `sheriff.token.issuers.<name>.jwks.http.verify-hostname` (per-issuer, covering that
+issuer's JWKS and well-known fetches) and `sheriff.client.verify-hostname` (client-wide, covering
+every back-channel call the client engine makes). Both exist for SAN-mismatched development and
+test topologies, never production; see
+xref:../../adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008].
+
 === SSRF defence (COMMONS-3)
 
 Any URL from an IdP-controlled source (`jwks_uri`, discovery, `userinfo`, or any advertised

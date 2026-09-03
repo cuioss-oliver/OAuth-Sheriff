@@ -82,6 +82,23 @@ public final class ClientRuntimeConfig {
     public static final String ALLOW_INSECURE_HTTP = PREFIX + ".allow-insecure-http";
 
     /**
+     * Whether TLS hostname verification is enforced for this client's outbound calls. Property:
+     * {@code sheriff.client.verify-hostname}. Defaults to {@code true}.
+     * <p>
+     * Client-wide — applies to every outbound discovery and back-channel call this client makes.
+     * Setting it to {@code false} relaxes <strong>hostname matching only</strong>; certificate chain
+     * trust, expiry, and algorithm constraints remain fully enforced. Never set it to {@code false}
+     * in production. See {@link de.cuioss.sheriff.token.client.config.ClientConfiguration#isVerifyHostname()}
+     * for the {@code SSLContext} mutual-exclusion constraint.
+     *
+     * @see de.cuioss.sheriff.token.client.config.ClientConfiguration#isVerifyHostname()
+     * @see <a href=
+     *      "https://github.com/cuioss/TokenSheriff/blob/main/doc/adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc">ADR-0008
+     *      - Adopt the upstream cui-http verifyHostname knob rather than a local trust manager</a>
+     */
+    public static final String VERIFY_HOSTNAME = PREFIX + ".verify-hostname";
+
+    /**
      * The maximum size, in bytes, of the authorization server's discovery document. Property:
      * {@code sheriff.client.discovery-document-max-size}. Defaults to
      * {@link de.cuioss.sheriff.token.client.config.ClientConfiguration#DEFAULT_DISCOVERY_DOCUMENT_MAX_SIZE}.

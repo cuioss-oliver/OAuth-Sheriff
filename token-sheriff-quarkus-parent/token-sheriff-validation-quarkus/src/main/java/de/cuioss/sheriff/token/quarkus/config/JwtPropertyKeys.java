@@ -509,6 +509,32 @@ public final class JwtPropertyKeys {
         public static final String ALLOW_INSECURE_HTTP = HTTP_BASE + "allow-insecure-http";
 
         /**
+         * Whether TLS hostname verification is enforced for this issuer's JWKS transport.
+         * Template: "sheriff.token.issuers.%s.jwks.http.verify-hostname"
+         * <p>
+         * By default the transport layer verifies that the certificate presented by the JWKS or
+         * well-known discovery endpoint matches the host actually contacted. Setting this to
+         * {@code false} relaxes <strong>hostname matching only</strong> — certificate chain trust,
+         * expiry, and algorithm constraints all remain fully enforced, so an untrusted or expired
+         * certificate is still rejected. It is only appropriate for local development and test
+         * topologies serving SAN-mismatched certificates.
+         * </p>
+         * <p>
+         * <strong>Security warning:</strong> Never disable this in production. Without hostname
+         * verification there is no guarantee that the certificate presented belongs to the host
+         * actually contacted, which re-opens the man-in-the-middle vector that chain validation
+         * alone does not close.
+         * </p>
+         * <p>
+         * Default value is {@code true} (hostname verification enforced). Applies to both
+         * {@link #JWKS_URL} and {@link #WELL_KNOWN_URL}.
+         * </p>
+         *
+         * @see de.cuioss.sheriff.token.commons.transport.HttpJwksLoaderConfig.HttpJwksLoaderConfigBuilder#verifyHostname(boolean)
+         */
+        public static final String VERIFY_HOSTNAME = HTTP_BASE + "verify-hostname";
+
+        /**
          * Whether egress to loopback/link-local/site-local/ULA/metadata addresses is permitted for this issuer.
          * Template: "sheriff.token.issuers.%s.jwks.http.allow-loopback-egress"
          * <p>

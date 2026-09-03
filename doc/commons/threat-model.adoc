@@ -61,7 +61,9 @@ were audited to the requirements below during the move into commons.
 | *TLS downgrade / MITM on any IdP fetch.* Downgrade to plaintext or a forged certificate
   lets an attacker substitute metadata, keys, or token-endpoint responses.
 | Enforce TLS 1.2+ with certificate validation on every outbound request; reject plain
-  HTTP endpoints. TLS is configured centrally, not per-caller.
+  HTTP endpoints. TLS is configured centrally, not per-caller. Chain trust, expiry and
+  algorithm constraints are unconditional; *hostname matching is default-ON but relaxable
+  by explicit per-configuration opt-in* (see the residual risk below).
 | https://www.rfc-editor.org/rfc/rfc9700[RFC 9700 §2.6], https://www.rfc-editor.org/rfc/rfc8414[RFC 8414 §2]
 | xref:requirements.adoc#COMMONS-2[COMMONS-2]
 
@@ -83,6 +85,24 @@ were audited to the requirements below during the move into commons.
 | xref:requirements.adoc#COMMONS-9[COMMONS-9], xref:requirements.adoc#COMMONS-10[COMMONS-10], xref:requirements.adoc#COMMONS-11[COMMONS-11], xref:requirements.adoc#COMMONS-12[COMMONS-12]
 |===
 
+[#_residual_risks]
+=== Residual risks
+
+The transport controls above leave one residual exposure, recorded here rather than implied away:
+
+* *A deployment that opts out of hostname verification accepts a narrowed T-TLS mitigation.*
+  Hostname matching is the one qualified part of certificate validation under
+  xref:requirements.adoc#COMMONS-2[COMMONS-2]: it is ON by default and relaxable by explicit
+  opt-in, via `sheriff.token.issuers.<name>.jwks.http.verify-hostname` (per-issuer) or
+  `sheriff.client.verify-hostname` (client-wide). What remains enforced is substantial — chain
+  trust, expiry and algorithm constraints all still apply, so an untrusted or expired certificate
+  is still rejected — but the mitigation is narrowed: with hostname matching off there is no
+  guarantee that the certificate presented belongs to the host actually contacted, so an attacker
+  holding any certificate this deployment trusts can impersonate the IdP. The knob exists for
+  development and test topologies serving SAN-mismatched certificates; the risk falls entirely on
+  the deployment that opts in, which is why the default is ON. See
+  xref:../adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008].
+
 == Adversarial test coverage
 
 Each transport threat is exercised by the `generators` test artifact's dispatchers in an
@@ -95,7 +115,7 @@ spec]):
 
 | T-SSRF | Discovery / JWKS / userinfo dispatchers advertise redirect or internal-range URLs.
 | T-DISCOVERY | Discovery dispatcher advertises a mismatched `issuer` / attacker `jwks_uri`.
-| T-TLS | Endpoint offered over plain HTTP / with a downgrade is rejected by the client.
+| T-TLS | Endpoint offered over plain HTTP / with a downgrade is rejected by the client. Coverage is for the default posture (hostname verification ON); the relaxed posture is not exercised adversarially.
 | T-DOS | Dispatchers emit oversized / slow-drip bodies.
 | T-LEAK | Edge tests assert problem+json carries no stack trace / internal identifier.
 |===

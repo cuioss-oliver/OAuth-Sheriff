@@ -52,6 +52,17 @@ All outbound IdP requests MUST use TLS 1.2 or higher with certificate validation
 HTTP endpoints MUST be rejected. TLS configuration is centralized (via `cui-http`'s
 `SecureSSLContextProvider`), not per-caller.
 
+*Carve-out — hostname matching.* Certificate validation decomposes into chain trust, expiry,
+algorithm constraints, and hostname matching. The first three are unconditional and admit no
+opt-out. Hostname matching alone is a per-configuration, default-ON knob that a deployment MAY
+relax by explicit opt-in; when it is relaxed, the remaining checks stay fully enforced, so an
+untrusted or expired certificate is still rejected. The knob exists for development and test
+topologies serving SAN-mismatched certificates and MUST NOT be used in production — a deployment
+that opts out accepts a narrowed mitigation. It is reachable from two configuration surfaces:
+`sheriff.token.issuers.<name>.jwks.http.verify-hostname` (per-issuer, validation) and
+`sheriff.client.verify-hostname` (client-wide, client engine). See
+xref:../adr/0008-Adopt_the_upstream_cui-http_verifyHostname_knob_rather_than_a_local_trust_manager.adoc[ADR-0008].
+
 * Source: https://www.rfc-editor.org/rfc/rfc9700[RFC 9700 §2.6], https://www.rfc-editor.org/rfc/rfc8414[RFC 8414 §2] (metadata retrieved over TLS).
 
 [#COMMONS-3]
