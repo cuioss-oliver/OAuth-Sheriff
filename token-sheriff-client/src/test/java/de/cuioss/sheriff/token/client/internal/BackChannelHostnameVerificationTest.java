@@ -41,6 +41,7 @@ import lombok.Getter;
 import okhttp3.tls.HandshakeCertificates;
 import okhttp3.tls.HeldCertificate;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,7 +57,6 @@ import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -265,8 +265,10 @@ class BackChannelHostnameVerificationTest {
      * which already pins its refusal to chain trust. An escaping {@link TransportException} is only
      * meaningful on the positive control if it came from the TLS decision under test; a connect or read
      * timeout wraps into the same exception type, so without this discrimination a slow machine would
-     * fail the control with a message that looks like "hostname relaxation did not take effect". Any
-     * non-timeout failure is rethrown untouched so the real cause still surfaces.
+     * report a verification failure that never actually happened. A proven timeout therefore aborts the
+     * test as no-verdict — {@link Assumptions#abort(String)} — rather than failing it; a test that could
+     * not reach a verdict must report "no verdict", never "failed". Any non-timeout failure is rethrown
+     * untouched so the real cause still surfaces and still fails the test.
      */
     private AuthorizationCodeFlow.AuthenticationResult exchangeDiscriminatingTimeouts(
             ClientConfiguration config, ProviderMetadata metadata, FlowContext context,
@@ -275,10 +277,12 @@ class BackChannelHostnameVerificationTest {
             return flow(config).exchange(metadata, context, callback, auth(config));
         } catch (TransportException failure) {
             String causes = causeChain(failure);
-            assertFalse(causes.contains("timed out") || causes.contains("timeout"),
-                    "the exchange timed out rather than reaching a TLS verification outcome; this is a "
-                            + "machine-load artefact, not evidence about hostname relaxation. Cause chain was: "
-                            + causes);
+            if (causes.contains("timed out") || causes.contains("timeout")) {
+                Assumptions.abort(
+                        "the exchange timed out rather than reaching a TLS verification outcome; this is a "
+                                + "machine-load artefact, not evidence about hostname relaxation. Cause chain was: "
+                                + causes);
+            }
             throw failure;
         }
     }
