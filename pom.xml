@@ -134,6 +134,91 @@
                             </execution>
                         </executions>
                     </plugin>
+                    <plugin>
+                        <!-- Durable guard for the parent-inherited JavaUtilAPIs exclusion.
+
+                             cui-java-parent keeps org.openrewrite.java.migrate.util.JavaUtilAPIs OUT
+                             of activeRecipes because its transitive UseMapOf recipe emits
+                             non-compiling output (see TokenSheriff PR #577). The exclusion lives
+                             entirely in the parent and is invisible from here, so a future parent
+                             bump could silently re-activate it with no local signal. This dumps the
+                             RESOLVED recipe list; the next execution asserts against it.
+
+                             OBSERVED FACT, established by generating the effective POM once and
+                             inspecting it before the pattern below was written: help:effective-pom
+                             STRIPS XML comments. The parent keeps the exclusion as a commented-out
+                             <recipe> element, and neither that element nor its rationale comment
+                             appears in the generated file - only genuinely active recipes are
+                             rendered. The pattern is nonetheless anchored to the uncommented
+                             <recipe> element form, so it matches an active declaration only and
+                             could not match a commented-out one even if comment handling changed.
+
+                             Both executions are inherited=false: the recipe list resolves once, on
+                             the root aggregator, so running this per module would only repeat the
+                             same check. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-help-plugin</artifactId>
+                        <!-- Explicit: maven-help-plugin is not in the inherited pluginManagement, and
+                             the parent's enforcer RequirePluginVersions rule rejects an unversioned
+                             plugin. exec-maven-plugin below needs no version - that one IS managed. -->
+                        <version>3.5.2</version>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>dump-effective-pom-for-recipe-audit</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>effective-pom</goal>
+                                </goals>
+                                <configuration>
+                                    <output>${project.build.directory}/effective-pom-pre-commit.xml</output>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- The assertion itself: no helper script and no XML parser, just grep's
+                             exit code inverted through exec:exec successCodes.
+
+                             OBSERVED FACT (measured, not assumed): grep -L is NOT usable as the
+                             signal here. On BSD grep (macOS) a -L run over a file that does NOT
+                             contain the pattern prints the filename and still exits 1, so the
+                             "absent implies exit 0" premise does not hold across platforms and the
+                             assertion would fail permanently on a correctly-excluded tree.
+
+                             Plain grep has portable, well-defined exit codes: 0 = pattern FOUND,
+                             1 = NOT found, 2 = file missing or unreadable. Declaring 1 as the only
+                             success code therefore asserts exactly "the recipe is not active", and
+                             is fail-closed in both other directions: an active recipe (0) reds the
+                             build, and so does a missing or unreadable effective POM (2), which
+                             would otherwise let the guard pass while checking nothing.
+
+                             On failure grep prints the offending line, so the build output names
+                             the recipe that came back. -->
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>assert-javautilapis-excluded</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>grep</executable>
+                                    <arguments>
+                                        <argument>-F</argument>
+                                        <argument>&lt;recipe&gt;org.openrewrite.java.migrate.util.JavaUtilAPIs&lt;/recipe&gt;</argument>
+                                        <argument>${project.build.directory}/effective-pom-pre-commit.xml</argument>
+                                    </arguments>
+                                    <successCodes>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                 </plugins>
             </build>
         </profile>
