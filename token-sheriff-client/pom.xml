@@ -25,7 +25,7 @@
              pluginManagement from cui-java-parent or token-sheriff-parent, so the IT tier
              binding below must pin its own version. Kept aligned with the effective Surefire
              version so the *Test unit tier and *IT integration tier run the same generation. -->
-        <version.maven.failsafe>3.5.6</version.maven.failsafe>
+        <version.maven.failsafe>3.6.0</version.maven.failsafe>
     </properties>
 
     <dependencyManagement>
