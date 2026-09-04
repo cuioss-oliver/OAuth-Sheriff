@@ -27,6 +27,7 @@ import de.cuioss.sheriff.token.client.lifecycle.RefreshScheduler;
 import de.cuioss.sheriff.token.client.lifecycle.RevocationClient;
 import de.cuioss.sheriff.token.client.lifecycle.StoredToken;
 import de.cuioss.sheriff.token.client.lifecycle.TokenLifecycleManager;
+import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.dispatcher.TokenDispatcher;
@@ -152,8 +153,13 @@ abstract class RefreshTestSupport {
 
     /**
      * Records the attempted revocation and then throws, so a wired reuse test can assert the
-     * best-effort {@code catch (RuntimeException)} in {@code revokeReusedFamily} still fails closed:
-     * the reuse signal propagates and the store is cleared even when the RFC 7009 revocation fails.
+     * best-effort {@code catch (TransportException)} in {@code revokeAndClearFailClosed} still fails
+     * closed: the reuse signal propagates and the store is cleared even when the RFC 7009 revocation
+     * fails.
+     * <p>
+     * The thrown type is {@link TransportException} because that is the only type
+     * {@link RevocationClient#revoke} declares — a double that threw an undeclared type would be
+     * asserting against a contract the production API does not offer.
      */
     static final class ThrowingRevocationClient extends RevocationClient {
 
@@ -167,7 +173,7 @@ abstract class RefreshTestSupport {
         public void revoke(String revocationEndpoint, String token, String tokenTypeHint,
                 ClientAuthentication clientAuthentication) {
             attemptedTokens.add(token);
-            throw new IllegalStateException("simulated AS revocation failure");
+            throw new TransportException("simulated AS revocation failure");
         }
 
         boolean attempted(String token) {

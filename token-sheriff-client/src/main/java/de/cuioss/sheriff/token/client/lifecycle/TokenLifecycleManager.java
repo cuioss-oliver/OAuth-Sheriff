@@ -26,6 +26,7 @@ import de.cuioss.sheriff.token.client.token.RefreshTokenFamily;
 import de.cuioss.sheriff.token.client.token.RotationResult;
 import de.cuioss.sheriff.token.commons.error.ClientProtocolException;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
+import de.cuioss.sheriff.token.commons.error.TransportException;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
 import de.cuioss.tools.logging.CuiLogger;
@@ -339,10 +340,22 @@ public class TokenLifecycleManager {
                     idTokenValidationBridge, clientAuthentication);
             mine.complete(refreshed);
             return refreshed;
-        } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException failure) {
+        } catch (TokenSheriffException | IllegalStateException failure) {
+            // Narrowed against the throwers doRefresh declares: TokenSheriffException and
+            // IllegalStateException. ClientProtocolException — the third declared thrower — is a
+            // subclass of TokenSheriffException and is therefore already covered; naming it as a
+            // separate multi-catch alternative would not compile.
             mine.completeExceptionally(failure);
             throw failure;
         } finally {
+            // Defensive completion, and the reason the catch below may be narrowed at all: a
+            // throwable outside the narrowed set would otherwise leave mine uncompleted while a
+            // joining caller is already blocked on it in awaitInFlight, hanging that caller
+            // indefinitely. CompletableFuture completion is idempotent, so this is a no-op on the
+            // normal path and on the narrowed-catch path — it only fires for an escape the catch
+            // does not name.
+            mine.completeExceptionally(new IllegalStateException(
+                    "refresh terminated without completing the single-flight future"));
             inFlight.remove(sessionId, mine);
         }
     }
@@ -528,7 +541,7 @@ public class TokenLifecycleManager {
             metadata.getRevocationEndpoint().ifPresent(endpoint -> {
                 try {
                     revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
-                } /*~~(TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe)~~>*/ catch (RuntimeException revocationFailure) {
+                } catch (TransportException revocationFailure) {
                     // Revocation is best-effort: a failed AS revocation must not stop the client-side
                     // fail-closed store clear below, nor mask the original refusal to the caller.
                     LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
