@@ -537,20 +537,31 @@ public class TokenLifecycleManager {
     private void revokeAndClearFailClosed(String sessionId, ProviderMetadata metadata,
             @Nullable String token, RevocationClient revocationClient,
             ClientAuthentication clientAuthentication) {
-        if (token != null) {
-            metadata.getRevocationEndpoint().ifPresent(endpoint -> {
-                try {
-                    revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
-                } catch (TransportException revocationFailure) {
-                    // Revocation is best-effort: a failed AS revocation must not stop the client-side
-                    // fail-closed store clear below, nor mask the original refusal to the caller.
-                    LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
-                            revocationFailure.getMessage());
-                }
-            });
+        try {
+            if (token != null) {
+                metadata.getRevocationEndpoint().ifPresent(endpoint -> {
+                    try {
+                        revocationClient.revoke(endpoint, token, REFRESH_TOKEN_TYPE_HINT, clientAuthentication);
+                    } catch (TransportException revocationFailure) {
+                        // Revocation is best-effort: a failed AS revocation must not stop the client-side
+                        // fail-closed store clear below, nor mask the original refusal to the caller.
+                        LOGGER.debug(revocationFailure, "RFC 7009 revocation on fail-closed clear failed: %s",
+                                revocationFailure.getMessage());
+                    }
+                });
+            }
+        } finally {
+            // The clear is the fail-closed guarantee itself, so it must not be reachable only on the
+            // paths the catch above names. RevocationClient is a non-final collaborator whose revoke
+            // is overridable: an implementation may throw an unchecked exception that the narrowed
+            // TransportException catch does not cover, which would otherwise escape this method with
+            // the session and its rotation family still stored — a retained credential the caller was
+            // told had been destroyed. Running the clear in a finally keeps the guarantee unconditional
+            // while leaving propagation unchanged: TransportException stays caught and best-effort,
+            // anything else still reaches the caller, only now after the clear has run.
+            tokenStore.remove(sessionId);
+            families.remove(sessionId);
         }
-        tokenStore.remove(sessionId);
-        families.remove(sessionId);
     }
 
     /**

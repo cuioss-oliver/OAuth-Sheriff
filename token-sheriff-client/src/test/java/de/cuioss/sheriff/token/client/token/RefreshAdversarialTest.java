@@ -150,6 +150,41 @@ class RefreshAdversarialTest extends RefreshTestSupport {
     }
 
     @Test
+    @DisplayName("Should still clear the store when the AS revocation throws an unchecked exception")
+    void shouldFailClosedWhenRevocationThrowsUnchecked(URIBuilder uriBuilder) {
+        ClientConfiguration config = config();
+        ProviderMetadata metadata = metadata(uriBuilder);
+        RefreshFlow flow = refreshFlow(config);
+        var revocationClient = new UncheckedThrowingRevocationClient(config);
+        TokenLifecycleManager manager = manager();
+        String session = Generators.letterStrings(10, 20).next();
+        String rt1 = Generators.letterStrings(20, 40).next();
+        String rt2 = Generators.letterStrings(20, 40).next();
+
+        manager.store(session, bearerBundle(rt1, null));
+        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rt2, null, 300));
+        manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth(config));
+
+        // Roll the store back to the now-superseded token while the family stays at rt2, then present it.
+        manager.store(session, bearerBundle(rt1, null));
+        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(),
+                Generators.letterStrings(20, 40).next(), null, 300));
+        var clientAuth = clientAuth(config);
+
+        // The narrowed catch covers TransportException only, so this unchecked failure is deliberately
+        // NOT caught and reaches the caller. What must not change is the fail-closed clear.
+        assertThrows(IllegalStateException.class,
+                () -> manager.refresh(session, metadata, flow, revocationClient, idBridge, clientAuth),
+                "an unchecked revocation-client failure is outside the narrowed catch and propagates");
+
+        assertAll("fail-closed despite an unchecked revocation failure",
+                () -> assertTrue(revocationClient.attempted(rt1),
+                        "the RFC 7009 revocation of the reused token was attempted"),
+                () -> assertTrue(manager.get(session).isEmpty(),
+                        "the store is cleared fail-closed even when revocation throws outside the narrowed catch"));
+    }
+
+    @Test
     @DisplayName("Should collapse a concurrent refresh onto one redeem without revoking the family")
     void shouldNotMisclassifyBenignRaceAsReuse(URIBuilder uriBuilder) throws Exception {
         ClientConfiguration config = config();

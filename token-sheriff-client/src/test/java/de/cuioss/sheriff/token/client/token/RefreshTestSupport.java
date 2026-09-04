@@ -180,4 +180,30 @@ abstract class RefreshTestSupport {
             return attemptedTokens.contains(token);
         }
     }
+
+    /**
+     * Revocation client whose {@code revoke} fails with an <em>unchecked</em> exception rather than the
+     * declared {@link TransportException}. {@link RevocationClient} is a non-final class with an
+     * overridable {@code revoke}, so nothing stops a real implementation from doing the same; this
+     * double pins that the fail-closed store clear still runs on that path.
+     */
+    static final class UncheckedThrowingRevocationClient extends RevocationClient {
+
+        private final List<String> attemptedTokens = Collections.synchronizedList(new ArrayList<>());
+
+        UncheckedThrowingRevocationClient(ClientConfiguration configuration) {
+            super(configuration);
+        }
+
+        @Override
+        public void revoke(String revocationEndpoint, String token, String tokenTypeHint,
+                ClientAuthentication clientAuthentication) {
+            attemptedTokens.add(token);
+            throw new IllegalStateException("simulated unchecked revocation-client failure");
+        }
+
+        boolean attempted(String token) {
+            return attemptedTokens.contains(token);
+        }
+    }
 }
