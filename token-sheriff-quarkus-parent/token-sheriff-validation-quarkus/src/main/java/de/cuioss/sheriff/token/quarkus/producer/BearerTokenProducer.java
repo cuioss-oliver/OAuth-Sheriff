@@ -112,6 +112,14 @@ import static de.cuioss.sheriff.token.quarkus.TokenSheriffQuarkusLogMessages.WAR
  * @author Oliver Wolff
  */
 @ApplicationScoped
+// cui-rewrite:disable CuiLogRecordPatternRecipe
+// Demonstrated false positive: the recipe mis-fires on the CuiLogger
+// warn(Throwable, LogRecord, Object...) overload, mistaking the leading Throwable for the format
+// argument. The flagged call — LOGGER.warn(e, BEARER_TOKEN_VALIDATION_FAILED, e.getMessage(),
+// e.getEventType()) — already uses a valid LogRecord whose template
+// ("Bearer token validation failed: %s (eventType=%s)") carries exactly two %s placeholders, matched
+// by the two supplied arguments. The call is correct and is deliberately not contorted to satisfy
+// the recipe.
 public class BearerTokenProducer {
 
     private static final CuiLogger LOGGER = new CuiLogger(BearerTokenProducer.class);
@@ -231,7 +239,6 @@ public class BearerTokenProducer {
                         .build();
             }
         } catch (TokenValidationException e) {
-            /*~~(TODO: WARN needs LogRecord. Suppress: // cui-rewrite:disable CuiLogRecordPatternRecipe)~~>*/
             LOGGER.warn(e, BEARER_TOKEN_VALIDATION_FAILED, e.getMessage(), e.getEventType());
             return BearerTokenResult.parsingError(e, requiredScopes, requiredRoles, requiredGroups);
         }
