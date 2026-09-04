@@ -21,11 +21,6 @@
         <version.lombok>1.18.48</version.lombok>
         <version.dsl.json>2.0.2</version.dsl.json>
         <version.archunit>1.5.0</version.archunit>
-        <!-- Explicit Failsafe version: token-sheriff-client inherits no maven-failsafe-plugin
-             pluginManagement from cui-java-parent or token-sheriff-parent, so the IT tier
-             binding below must pin its own version. Kept aligned with the effective Surefire
-             version so the *Test unit tier and *IT integration tier run the same generation. -->
-        <version.maven.failsafe>3.6.0</version.maven.failsafe>
     </properties>
 
     <dependencyManagement>
@@ -202,11 +197,16 @@
             </plugin>
             <!-- Bind Failsafe so the wired-flow integration tier (WiredFlowNegativePathIT, which uses
                  MockWebServer — no external infra) actually runs under `mvn verify`. The *IT class was
-                 previously compiled but never executed because no Failsafe binding existed here. -->
+                 previously compiled but never executed because no Failsafe binding existed here.
+
+                 Only the binding is declared here: the version comes from cui-parent-pom's
+                 pluginManagement, the same source that supplies Surefire. Pinning it locally would
+                 re-split the two tiers on every parent bump — the enforcer's RequireSameVersions rule
+                 compares them, so a local pin makes the parent's Surefire move a build break until the
+                 pin is hand-edited to match (PRs #703/#707). Inheriting keeps them in lockstep. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
-                <version>${version.maven.failsafe}</version>
                 <executions>
                     <execution>
                         <goals>
