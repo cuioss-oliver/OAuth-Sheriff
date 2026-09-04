@@ -51,4 +51,64 @@
         <frontend.npm.version>10.9.2</frontend.npm.version>
     </properties>
 
+    <profiles>
+        <profile>
+            <!-- Local addition to the pre-commit profile inherited from cui-java-parent.
+
+                 The inherited profile binds two MUTATING executions - license:format
+                 (phase process-sources) and rewrite:run - and asserts nothing afterwards,
+                 so the gate rewrites the working tree and still exits 0. A green exit code
+                 therefore carries no information about whether the tree was changed.
+
+                 The two executions below are the missing post-conditions. Both are
+                 non-mutating, both run in the verify phase - after the mutating executions,
+                 in the same reactor pass - and both fail the build when the gate would
+                 still change a file. On a stable tree they find nothing and the build stays
+                 green.
+
+                 activeRecipes is deliberately NOT redeclared here: the parent's recipe list
+                 stays the single source of truth. No plugin version is declared either -
+                 both plugins are already bound by the inherited profile, so no new build
+                 dependency is introduced. -->
+            <id>pre-commit</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.mycila</groupId>
+                        <artifactId>license-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <!-- Post-condition for format-license-headers: fails when any
+                                     header would still be rewritten. -->
+                                <id>assert-license-headers-unchanged</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.openrewrite.maven</groupId>
+                        <artifactId>rewrite-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <!-- Post-condition for the rewrite execution: fails when any
+                                     active recipe would still change a source file. -->
+                                <id>assert-no-rewrite-changes</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>dryRun</goal>
+                                </goals>
+                                <configuration>
+                                    <failOnDryRunResults>true</failOnDryRunResults>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>
