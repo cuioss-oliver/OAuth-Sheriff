@@ -51,4 +51,177 @@
         <frontend.npm.version>10.9.2</frontend.npm.version>
     </properties>
 
+    <profiles>
+        <profile>
+            <!-- Local addition to the pre-commit profile inherited from cui-java-parent.
+
+                 The inherited profile binds two MUTATING executions - license:format
+                 (phase process-sources) and rewrite:run - and asserts nothing afterwards,
+                 so the gate rewrites the working tree and still exits 0. A green exit code
+                 therefore carries no information about whether the tree was changed.
+
+                 The two executions below are the missing post-conditions. Both are
+                 non-mutating, both run in the verify phase - after the mutating executions,
+                 in the same reactor pass - and both fail the build when the gate would
+                 still change a file. On a stable tree they find nothing and the build stays
+                 green.
+
+                 activeRecipes is deliberately NOT redeclared here: the parent's recipe list
+                 stays the single source of truth. No plugin version is declared either -
+                 both plugins are already bound by the inherited profile, so no new build
+                 dependency is introduced.
+
+                 FIXED-POINT SURVEY (measured, not reasoned about).
+                 The assertions above are only satisfiable if the committed tree already IS the
+                 gate's fixed point. That was established empirically: starting from a tree that
+                 git reported as carrying no changes, a full -Ppre-commit clean verify was run and
+                 the result read back. Outcome: the build exited zero, git still reported no
+                 changes, and rewrite:dryRun produced no rewrite.patch in any module - dryRun writes
+                 that file only when it has results, and failOnDryRunResults=true would have failed
+                 the build had there been any. The residual-mutation enumeration is therefore EMPTY:
+                 no mutation class survives, so there is no fix, site-suppression or profile
+                 exclusion to record here, and no <exclusions> entry was needed.
+
+                 Confirmed by the same run, per mutation class known at authoring time:
+                 - Injected rewrite markers (InvalidExceptionUsageRecipe, CuiLogRecordPatternRecipe):
+                   all four committed sites were cleared beforehand - three by narrowing the caught
+                   type against the callee's declared throwers, one as a demonstrated recipe false
+                   positive recorded with a class-level suppression.
+                 - CuiLoggerStandardsRecipe rewriting %n to %s (semantic damage - it misreads the
+                   argument-less %n conversion as a value placeholder): confirmed INERT at both live
+                   sites, JfrVarianceAnalyzer.printSummary() and TokenValidatorMetricsTest. Neither
+                   appeared in the git status output nor in any patch, so the existing METHOD-LEVEL
+                   // cui-rewrite:disable comments do take effect at that placement. No escalation to
+                   class-level suppression was required.
+                 - License-header reformatting: license:check reports every header already conformant.
+
+                 A future run that reds these assertions is reporting a real new mutation - it is not
+                 noise, and the remedy is to fix the source, suppress at the site with a recorded
+                 rationale, or add an <exclusions> entry here, never to relax the assertions. -->
+            <id>pre-commit</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.mycila</groupId>
+                        <artifactId>license-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <!-- Post-condition for format-license-headers: fails when any
+                                     header would still be rewritten. -->
+                                <id>assert-license-headers-unchanged</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.openrewrite.maven</groupId>
+                        <artifactId>rewrite-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <!-- Post-condition for the rewrite execution: fails when any
+                                     active recipe would still change a source file. -->
+                                <id>assert-no-rewrite-changes</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>dryRun</goal>
+                                </goals>
+                                <configuration>
+                                    <failOnDryRunResults>true</failOnDryRunResults>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Durable guard for the parent-inherited JavaUtilAPIs exclusion.
+
+                             cui-java-parent keeps org.openrewrite.java.migrate.util.JavaUtilAPIs OUT
+                             of activeRecipes because its transitive UseMapOf recipe emits
+                             non-compiling output (see TokenSheriff PR #577). The exclusion lives
+                             entirely in the parent and is invisible from here, so a future parent
+                             bump could silently re-activate it with no local signal. This dumps the
+                             RESOLVED recipe list; the next execution asserts against it.
+
+                             OBSERVED FACT, established by generating the effective POM once and
+                             inspecting it before the pattern below was written: help:effective-pom
+                             STRIPS XML comments. The parent keeps the exclusion as a commented-out
+                             <recipe> element, and neither that element nor its rationale comment
+                             appears in the generated file - only genuinely active recipes are
+                             rendered. The pattern is nonetheless anchored to the uncommented
+                             <recipe> element form, so it matches an active declaration only and
+                             could not match a commented-out one even if comment handling changed.
+
+                             Both executions are inherited=false: the recipe list resolves once, on
+                             the root aggregator, so running this per module would only repeat the
+                             same check. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-help-plugin</artifactId>
+                        <!-- Explicit: maven-help-plugin is not in the inherited pluginManagement, and
+                             the parent's enforcer RequirePluginVersions rule rejects an unversioned
+                             plugin. exec-maven-plugin below needs no version - that one IS managed. -->
+                        <version>3.5.2</version>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>dump-effective-pom-for-recipe-audit</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>effective-pom</goal>
+                                </goals>
+                                <configuration>
+                                    <output>${project.build.directory}/effective-pom-pre-commit.xml</output>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- The assertion itself: no helper script and no XML parser, just grep's
+                             exit code inverted through exec:exec successCodes.
+
+                             OBSERVED FACT (measured, not assumed): grep -L is NOT usable as the
+                             signal here. On BSD grep (macOS) a -L run over a file that does NOT
+                             contain the pattern prints the filename and still exits 1, so the
+                             "absent implies exit 0" premise does not hold across platforms and the
+                             assertion would fail permanently on a correctly-excluded tree.
+
+                             Plain grep has portable, well-defined exit codes: 0 = pattern FOUND,
+                             1 = NOT found, 2 = file missing or unreadable. Declaring 1 as the only
+                             success code therefore asserts exactly "the recipe is not active", and
+                             is fail-closed in both other directions: an active recipe (0) reds the
+                             build, and so does a missing or unreadable effective POM (2), which
+                             would otherwise let the guard pass while checking nothing.
+
+                             On failure grep prints the offending line, so the build output names
+                             the recipe that came back. -->
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>assert-javautilapis-excluded</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>grep</executable>
+                                    <arguments>
+                                        <argument>-F</argument>
+                                        <argument>&lt;recipe&gt;org.openrewrite.java.migrate.util.JavaUtilAPIs&lt;/recipe&gt;</argument>
+                                        <argument>${project.build.directory}/effective-pom-pre-commit.xml</argument>
+                                    </arguments>
+                                    <successCodes>
+                                        <successCode>1</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

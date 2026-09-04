@@ -127,7 +127,30 @@ Markers indicate ACTUAL BUGS:
 - Generic Exception usage instead of specific types
 - RuntimeException catches that should be specific exceptions
 
-**Handling strategy**:
+#### Rewrite OUTPUT vs rewrite REQUEST-TO-ACT
+
+A rewrite run produces two categorically different things, and conflating them is how markers end
+up committed:
+
+- A rewrite **output** is a transformation the recipe already applied — formatted whitespace,
+  ordered imports, a removed unused import. It is finished work, and it is committed as-is.
+- A rewrite **request-to-act** is an injected `/*~~(TODO: … Suppress: …)~~>*/` marker. The recipe
+  could not fix the code itself, so it is asking a human to act. It is an open work item, never a
+  result. Committing it verbatim ships the request instead of the response.
+
+**Worked example.** Four markers were once committed to this repository verbatim — three
+`InvalidExceptionUsageRecipe` markers in `token-sheriff-client` and one
+`CuiLogRecordPatternRecipe` marker in `BearerTokenProducer`. Each was a request the author left
+unanswered. Reading the whole rewritten tree as "the tool's result" is the mistake: the formatting
+was a result, the markers were not.
+
+Acting on a request-to-act does not always mean changing the flagged code — sometimes the correct
+answer is that the recipe is wrong, and the act is to record that fact in the sanctioned
+suppression form (see below).
+
+**Never commit code with markers present.**
+
+#### Handling strategy
 
 Production code violations:
 - Fix the actual bug (add missing placeholders, change format to %s)
@@ -144,7 +167,82 @@ Test code violations:
 - For exception handling: Replace RuntimeException with AssertionError in test failures
 - For format bugs: Fix placeholder mismatches even in tests (change to %s)
 
-**Never commit code with markers present.**
+#### `InvalidExceptionUsageRecipe`: narrow the catch, do not suppress
+
+Suppression is **not** a valid strategy for `InvalidExceptionUsageRecipe`. The standing remedy is
+to narrow the caught exception type against the **throwers the callee actually declares** — except
+where the caught failures come from an **open set of SPI implementations that declare no
+`throws`**, in which case there is nothing to narrow against and suppression is legitimate.
+
+That carve-out is the rule's single limit, and it is part of the rule rather than a footnote: the
+tree already holds its one sanctioned instance at
+`token-sheriff-validation/src/main/java/de/cuioss/sheriff/token/validation/pipeline/TokenBuilder.java:143`,
+where custom SPI claim mappers are translated into `TokenValidationException`. Everywhere else,
+narrow.
+
+Two practical notes from the sites already narrowed:
+
+- Narrow against the **declared** throwers, not against what a test double happens to throw. When a
+  test double throws a type the API does not declare, the double is what is wrong.
+- Where a `catch` was load-bearing for an invariant — completing a future, releasing a latch —
+  make the `finally` block satisfy that invariant unconditionally **before** narrowing the catch.
+  Narrowing first opens a window in which an unnamed throwable escapes with the invariant broken.
+
+#### `CuiLogRecordPatternRecipe`: demonstrated false positives are suppressible in production code
+
+The class-level suppression form above is sanctioned in **production** code too, not only in test
+and utility classes — but only for a *demonstrated* recipe mis-fire on a call that is already
+correct, and only when the suppression is accompanied by a comment recording the specific mis-fire.
+The demonstration is required: this sanction is for proven false positives, never for silencing an
+inconvenient finding.
+
+**Worked instance.** `BearerTokenProducer` calls
+`LOGGER.warn(e, BEARER_TOKEN_VALIDATION_FAILED, e.getMessage(), e.getEventType())`. The recipe
+mis-fires on the `warn(Throwable, LogRecord, Object...)` overload, mistaking the leading
+`Throwable` for the format argument; the `LogRecord` template carries exactly two matching `%s`
+placeholders and the call is correct. The remedy was a class-level
+`// cui-rewrite:disable CuiLogRecordPatternRecipe` plus that explanation.
+
+**Corollary: never contort a correct logging call to satisfy a buggy recipe.**
+
+#### `CuiLoggerStandardsRecipe` rewriting `%n` to `%s` is semantic damage
+
+`CuiLoggerStandardsRecipe` misreads the argument-less `%n` line-separator conversion as a value
+placeholder and rewrites it to `%s`, adding a format placeholder with no matching argument and
+corrupting the format string. This is semantic damage, not cosmetic churn.
+
+The sanctioned remedy is a `// cui-rewrite:disable CuiLoggerStandardsRecipe` at the affected site
+with a comment citing the upstream defect `cuioss/cui-open-rewrite#135` — the form both live sites
+already use (`JfrVarianceAnalyzer.printSummary()` and `TokenValidatorMetricsTest`). A format string
+carrying `%n` must **never** be "fixed" by accepting the rewrite.
+
+#### What is known about suppression placement, and what is not
+
+The failure that produced the narrow-not-suppress rule was observed for a `// cui-rewrite:disable`
+comment placed at the **closing-brace / `catch`** position, and only there. Class-level and
+method-level suppression of `InvalidExceptionUsageRecipe` were never tested, so they are
+**untested, not refuted**. Treat that as a known gap for a future investigation, not as a finding.
+
+Adjacent evidence exists but must not be over-read: this tree relies on **method-level**
+suppression of a *different* recipe (`CuiLoggerStandardsRecipe`, at the two `%n` sites), and a
+`rewrite:dryRun` against the clean tree confirmed those suppressions do take effect at that
+placement. That result speaks to the **placement mechanism** only. It says nothing about whether
+`InvalidExceptionUsageRecipe` honours the same placements.
+
+#### The gate now fails loud
+
+`-Ppre-commit` no longer exits `0` after rewriting your files. Two non-mutating post-conditions run
+in the `verify` phase, after the mutating executions and in the same reactor pass:
+`license:check` (`assert-license-headers-unchanged`) and `rewrite:dryRun` with
+`failOnDryRunResults=true` (`assert-no-rewrite-changes`). If the gate would still change a file,
+the build fails and names it.
+
+So a green `-Ppre-commit` run is now a genuine clean-tree signal, and manually grepping for markers
+afterwards is a second line of defence rather than the only one. A red assertion is reporting a
+real mutation: fix the source, suppress at the site with a recorded rationale, or — only when
+neither is possible — add an `<exclusions>` entry to the local `pre-commit` profile in the root
+`pom.xml`. Never relax the assertions, and never redeclare `activeRecipes` locally: the parent's
+recipe list is the single source of truth.
 
 ## Pre-1.0 Project Rules
 
