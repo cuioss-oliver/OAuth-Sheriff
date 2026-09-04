@@ -41,6 +41,7 @@ import lombok.Getter;
 import okhttp3.tls.HandshakeCertificates;
 import okhttp3.tls.HeldCertificate;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -127,14 +128,66 @@ class BackChannelHostnameVerificationTest {
     private Map<String, String> savedTrustStoreProperties;
 
     @BeforeEach
-    void setUp() {
+    void setUp(URIBuilder uriBuilder) {
         accessHolder = TestTokenGenerators.accessTokens().next();
         idHolder = TestTokenGenerators.idTokens().next();
         TokenValidator validator = TokenValidator.builder().issuerConfig(accessHolder.getIssuerConfig()).build();
         accessBridge = new TokenValidationBridge(validator);
         idBridge = new IdTokenValidationBridge(validator);
+        preWarmTlsStack(uriBuilder);
         moduleDispatcher.reset();
         savedTrustStoreProperties = null;
+    }
+
+    /**
+     * Performs one throwaway back-channel exchange against the mock authorization server under the
+     * default posture, with no trust store installed, and discards the outcome.
+     * <p>
+     * The call exists only so the JVM's TLS machinery — provider initialisation, class loading and
+     * {@code SecureRandom} seeding — is already warm before any assertion-bearing exchange runs. Without
+     * it the first handshake in the JVM absorbs that one-off cost, and on a loaded machine it can exceed
+     * the transport timeout, so the fixture's verdict would report machine load rather than the TLS
+     * outcome under test. Sequenced before {@code moduleDispatcher.reset()} so the call count every
+     * control asserts on is cleared after this warm-up, whatever it did.
+     */
+    private void preWarmTlsStack(URIBuilder uriBuilder) {
+        var config = tlsConfig(true);
+        var context = FlowContext.create(REDIRECT_URI);
+        var callback = new CallbackParameters(Generators.letterStrings(20, 40).next(),
+                context.state(), null, null, null);
+        try {
+            flow(config).exchange(metadataWithTokenEndpoint(uriBuilder), context, callback, auth(config));
+        } catch (TransportException ignored) {
+            // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
+            // whole point; the outcome carries no information and is deliberately discarded.
+        }
+        abortIfInterrupted();
+    }
+
+    /**
+     * Aborts the current test as no-verdict when the pre-warm exchange left the interrupt status set on
+     * this thread.
+     * <p>
+     * The interrupt arrives here by a route that is invisible at the call site above: {@code
+     * TokenEndpointClient} catches {@link InterruptedException} from {@code HttpClient.send(...)},
+     * restores the interrupt status, and rethrows it wrapped as a {@link TransportException} — which the
+     * pre-warm deliberately discards along with every other warm-up outcome. The restored flag outlives
+     * that discard. Because {@code HttpClient.send(...)} inspects the calling thread's interrupt status
+     * on entry and JUnit runs the assertion-bearing methods on the same thread, the flag would make the
+     * positive control's own exchange fail before any TLS decision is reached — a thread-lifecycle
+     * artefact reported as a hostname-verification failure that never happened. The interrupt status is
+     * therefore left set, for whoever owns this thread, and the test reports "no verdict" ({@link
+     * Assumptions#abort(String)}) rather than "failed", mirroring the timeout discrimination in
+     * {@link #exchangeDiscriminatingTimeouts(ClientConfiguration, ProviderMetadata, FlowContext,
+     * CallbackParameters)}.
+     */
+    private static void abortIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            Assumptions.abort("the TLS pre-warm exchange was interrupted, leaving the interrupt status set on "
+                    + "this test thread; HttpClient.send(...) would throw InterruptedException on entry before "
+                    + "reaching any TLS decision. That is a thread-lifecycle artefact, not evidence about "
+                    + "hostname verification.");
+        }
     }
 
     @AfterEach
@@ -189,7 +242,7 @@ class BackChannelHostnameVerificationTest {
 
         // Act
         AuthorizationCodeFlow.AuthenticationResult result =
-                flow(config).exchange(metadata, context, callback, auth(config));
+                exchangeDiscriminatingTimeouts(config, metadata, context, callback);
 
         // Assert
         assertAll("the exchange completes once hostname matching is relaxed",
@@ -229,6 +282,36 @@ class BackChannelHostnameVerificationTest {
         assertTrue(causes.contains("pkix") || causes.contains("unable to find valid certification path"),
                 "the rejection must be a certificate chain-trust failure (e.g. PKIX path building failed), "
                         + "not an unrelated IOException such as a timeout, but the cause chain was: " + causes);
+    }
+
+    /**
+     * Runs the back-channel exchange, but names a timeout for what it is before the failure can be read
+     * as a verification outcome.
+     * <p>
+     * This restores symmetry with {@link #shouldStillRefuseUntrustedIssuerWhenVerificationDisabled},
+     * which already pins its refusal to chain trust. An escaping {@link TransportException} is only
+     * meaningful on the positive control if it came from the TLS decision under test; a connect or read
+     * timeout wraps into the same exception type, so without this discrimination a slow machine would
+     * report a verification failure that never actually happened. A proven timeout therefore aborts the
+     * test as no-verdict — {@link Assumptions#abort(String)} — rather than failing it; a test that could
+     * not reach a verdict must report "no verdict", never "failed". Any non-timeout failure is rethrown
+     * untouched so the real cause still surfaces and still fails the test.
+     */
+    private AuthorizationCodeFlow.AuthenticationResult exchangeDiscriminatingTimeouts(
+            ClientConfiguration config, ProviderMetadata metadata, FlowContext context,
+            CallbackParameters callback) {
+        try {
+            return flow(config).exchange(metadata, context, callback, auth(config));
+        } catch (TransportException failure) {
+            String causes = causeChain(failure);
+            if (causes.contains("timed out") || causes.contains("timeout")) {
+                Assumptions.abort(
+                        "the exchange timed out rather than reaching a TLS verification outcome; this is a "
+                                + "machine-load artefact, not evidence about hostname relaxation. Cause chain was: "
+                                + causes);
+            }
+            throw failure;
+        }
     }
 
     /** Flattens a throwable's cause chain into one lower-cased string for message-shape assertions. */

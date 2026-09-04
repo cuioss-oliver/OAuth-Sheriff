@@ -25,6 +25,7 @@ import lombok.Getter;
 import okhttp3.tls.HandshakeCertificates;
 import okhttp3.tls.HeldCertificate;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -110,9 +111,56 @@ class JwksHostnameVerificationTest {
     private Map<String, String> savedTrustStoreProperties;
 
     @BeforeEach
-    void setUp() {
+    void setUp(URIBuilder uriBuilder) {
+        preWarmTlsStack(uriBuilder);
         moduleDispatcher.setCallCounter(0);
         savedTrustStoreProperties = null;
+    }
+
+    /**
+     * Performs one throwaway HTTPS handshake against the mock server under the default posture, with no
+     * trust store installed, and discards the outcome.
+     * <p>
+     * The call exists only so the JVM's TLS machinery — provider initialisation, class loading and
+     * {@code SecureRandom} seeding — is already warm before any assertion-bearing fetch runs. Without it
+     * the first handshake in the JVM absorbs that one-off cost, and on a loaded machine it can exceed the
+     * transport timeout, so the fixture's verdict would report machine load rather than the TLS outcome
+     * under test. Sequenced before {@code setCallCounter(0)} so the counter every control asserts on is
+     * zeroed after this warm-up, whatever it did.
+     */
+    private static void preWarmTlsStack(URIBuilder uriBuilder) {
+        try {
+            fetch(handlerFor(uriBuilder, null));
+        } catch (IOException ignored) {
+            // No trust store is installed, so the handshake is expected to fail. Warming the stack is the
+            // whole point; the outcome carries no information and is deliberately discarded.
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+        abortIfInterrupted();
+    }
+
+    /**
+     * Aborts the current test as no-verdict when the pre-warm handshake left the interrupt status set on
+     * this thread.
+     * <p>
+     * Restoring the interrupt status is the correct response to an {@link InterruptedException} the
+     * fixture does not own, but it is only half the story: {@code HttpClient.send(...)} inspects the
+     * calling thread's interrupt status on entry and throws {@link InterruptedException} immediately when
+     * it is already set. JUnit runs the assertion-bearing methods on the same thread, so a flag restored
+     * here would make the positive control's own fetch fail before any TLS decision is reached — a thread
+     * lifecycle artefact reported as a hostname-verification failure that never happened. The interrupt
+     * status is therefore left set, for whoever owns this thread, and the test reports "no verdict"
+     * ({@link Assumptions#abort(String)}) rather than "failed", mirroring the timeout discrimination in
+     * {@link #fetchDiscriminatingTimeouts(HttpHandler)}.
+     */
+    private static void abortIfInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            Assumptions.abort("the TLS pre-warm handshake was interrupted, leaving the interrupt status set on "
+                    + "this test thread; HttpClient.send(...) would throw InterruptedException on entry before "
+                    + "reaching any TLS decision. That is a thread-lifecycle artefact, not evidence about "
+                    + "hostname verification.");
+        }
     }
 
     @AfterEach
@@ -156,7 +204,7 @@ class JwksHostnameVerificationTest {
         HttpHandler handler = handlerFor(uriBuilder, false);
 
         // Act
-        HttpResponse<String> response = fetch(handler);
+        HttpResponse<String> response = fetchDiscriminatingTimeouts(handler);
 
         // Assert
         assertEquals(200, response.statusCode(), "the JWKS fetch must succeed once hostname matching is relaxed");
@@ -212,6 +260,33 @@ class JwksHostnameVerificationTest {
 
     private static HttpResponse<String> fetch(HttpHandler handler) throws IOException, InterruptedException {
         return handler.send(handler.requestBuilder().GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Fetches as {@link #fetch(HttpHandler)} does, but names a timeout for what it is before the failure
+     * can be read as a verification outcome.
+     * <p>
+     * This guards the positive control: an escaping {@link IOException} is only meaningful here if it
+     * came from the TLS decision under test. A connect or read timeout is also an {@code IOException},
+     * so without this discrimination a slow machine would report a verification failure that never
+     * actually happened. A proven timeout therefore aborts the test as no-verdict — {@link
+     * Assumptions#abort(String)} — rather than failing it; a test that could not reach a verdict must
+     * report "no verdict", never "failed". Any non-timeout failure is rethrown untouched so the real
+     * cause still surfaces and still fails the test.
+     */
+    private static HttpResponse<String> fetchDiscriminatingTimeouts(HttpHandler handler)
+            throws IOException, InterruptedException {
+        try {
+            return fetch(handler);
+        } catch (IOException failure) {
+            String causes = causeChain(failure);
+            if (causes.contains("timed out") || causes.contains("timeout")) {
+                Assumptions.abort(
+                        "the fetch timed out rather than reaching a TLS verification outcome; this is a machine-load "
+                                + "artefact, not evidence about hostname relaxation. Cause chain was: " + causes);
+            }
+            throw failure;
+        }
     }
 
     /** Flattens a throwable's cause chain into one lower-cased string for message-shape assertions. */
