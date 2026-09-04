@@ -138,7 +138,7 @@ README change.
 
 ```bash
 git add .github/project.yml
-git commit -m "chore(release): prepare release <version>" --trailer "Co-Authored-By: Claude <noreply@anthropic.com>"
+git commit -m "chore(release): prepare release <version>"
 git push -u origin chore/release_<version>
 gh label create skip-bot-review --repo cuioss/TokenSheriff --description "Skip automated bot review" --color ededed 2>/dev/null || true
 gh pr create --repo cuioss/TokenSheriff --base main \
@@ -151,8 +151,6 @@ The mechanical release PR carries the `skip-bot-review` label so automated bot r
 skipped, matching the other cuioss release skills (the preceding `gh label create` ensures the
 label exists first).
 
-Use the project commit convention: `Co-Authored-By: Claude <noreply@anthropic.com>` (no model
-name / no "Generated with Claude Code" footer).
 
 ### Step 8 — Wait for PR checks (~15–20 min)
 
@@ -336,4 +334,3 @@ dependency PRs were collapsed/removed during note reformatting.
   and auto-merge is blocked.
 - Never merge a red PR; fix and re-wait.
 - Temporary files go under `.plan/temp/`.
-- Commit trailer: `Co-Authored-By: Claude <noreply@anthropic.com>`; no PR footer line.
