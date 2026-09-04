@@ -182,6 +182,24 @@ class RefreshAdversarialTest extends RefreshTestSupport {
                         "the RFC 7009 revocation of the reused token was attempted"),
                 () -> assertTrue(manager.get(session).isEmpty(),
                         "the store is cleared fail-closed even when revocation throws outside the narrowed catch"));
+
+        // The store clear is only half of the fail-closed guarantee: the rotation family must go with it.
+        // Asserting the empty store alone cannot see a regression confined to family clearing, so drive a
+        // re-authentication for the same session id. A retained family would still hold the superseded
+        // rt2, misclassifying this fresh bundle's first rotation as a replay; the refresh succeeding is
+        // what proves the family was cleared too.
+        String rt3 = Generators.letterStrings(20, 40).next();
+        String rt4 = Generators.letterStrings(20, 40).next();
+        manager.store(session, bearerBundle(rt3, null));
+        getModuleDispatcher().respondWith(TokenDispatcher.tokenResponse(accessHolder.getRawToken(), rt4, null, 300));
+
+        StoredToken reauthenticated = manager
+                .refresh(session, metadata, flow, new RecordingRevocationClient(config), idBridge,
+                        clientAuth(config))
+                .orElseThrow();
+
+        assertEquals(rt4, reauthenticated.refreshToken(),
+                "the rotation family was cleared too, so the fresh bundle rotates instead of failing as reuse");
     }
 
     @Test
