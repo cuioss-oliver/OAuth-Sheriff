@@ -20,7 +20,7 @@ jobs:
     with:
       report-name: e-2-e-playwright
       maven-args-input: |
-        install -DskipTests -T 1C -am -pl bom,token-sheriff-validation,token-sheriff-quarkus-parent,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus-deployment,token-sheriff-quarkus-parent/token-sheriff-quarkus-integration-tests
+        install -DskipTests -DskipITs -T 1C -am -pl bom,token-sheriff-validation,token-sheriff-quarkus-parent,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus,token-sheriff-quarkus-parent/token-sheriff-validation-quarkus-deployment,token-sheriff-quarkus-parent/token-sheriff-quarkus-integration-tests
         verify -Pe2e-tests -pl token-sheriff-quarkus-parent/e-2-e-playwright
       install-playwright: true
       npm-cache: true
