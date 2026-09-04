@@ -68,7 +68,7 @@ jobs:
       - name: Build token-sheriff-validation
         run: |
           # Build core module first to ensure test artifact is available for benchmarking
-          ./mvnw --no-transfer-progress clean install -DskipTests
+          ./mvnw --no-transfer-progress clean install -DskipTests -DskipITs
 
       - name: Fetch Previous History
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
