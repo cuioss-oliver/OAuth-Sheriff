@@ -16,8 +16,7 @@ when a concrete version matters.
 ### Build-Configuration Verification
 
 This project inherits its build configuration from `cui-java-parent`, so the `pom.xml` files in this
-repository are not the effective configuration. A mechanism can be fully configured for this build
-and appear nowhere in this tree. The authoritative resolution command is:
+repository are not the effective configuration. The authoritative resolution command is:
 
 ```bash
 ./mvnw help:effective-pom
