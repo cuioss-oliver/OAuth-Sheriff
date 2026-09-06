@@ -22,14 +22,25 @@ repository are not the effective configuration. The authoritative resolution com
 ./mvnw help:effective-pom
 ```
 
+That bare form resolves only the invoked (root) project, and only under the profiles active for
+that invocation. It shows neither the per-module effective model nor configuration that lives in a
+profile which is currently inactive (for example `pre-commit`). Resolve the module and the profiles
+the claim is actually about:
+
+```bash
+./mvnw -Ppre-commit help:effective-pom -pl <module>
+```
+
 - **Before agreeing that a mechanism is missing or unconfigured**, read the parent POM chain and the
   effective POM. A repo-scoped search alone proves nothing about inherited configuration: absence
   from this tree is not absence from the build.
 - **Before adding a `<repositories>` or `<pluginRepositories>` declaration** — or any element Maven
-  merges by id — walk the parent chain to its root and read the effective POM first. Maven merges
-  same-id entries by replacement, not addition, so a local declaration displaces the inherited one
-  instead of joining it. Never reuse a super-POM reserved id such as `central` for an additive
-  channel.
+  merges by id, such as a plugin `<execution>` — walk the parent chain to its root and read the
+  effective POM first. Maven keys these elements by `id`: an entry whose id matches an inherited one
+  merges into that entry instead of being appended beside it, with the child's values winning field
+  by field while fields the child omits stay inherited from the parent. Reusing an id therefore
+  partially overrides the inherited entry rather than adding a second channel. Never reuse a
+  super-POM reserved id such as `central` for an additive channel.
 - **Before adopting an unreleased snapshot version-property pin**, enumerate every artifact that
   property governs — the main jar and every classifier — and verify each one's actual contents from
   the remote repository rather than a possibly-warm `~/.m2`. Compare class counts against the last
