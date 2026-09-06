@@ -13,6 +13,29 @@ Deliberately no version numbers here: this file is not a source of truth for the
 silently goes stale. Read the root `pom.xml` and `.mvn/wrapper/maven-wrapper.properties`
 when a concrete version matters.
 
+### Build-Configuration Verification
+
+This project inherits its build configuration from `cui-java-parent`, so the `pom.xml` files in this
+repository are not the effective configuration. A mechanism can be fully configured for this build
+and appear nowhere in this tree. The authoritative resolution command is:
+
+```bash
+./mvnw help:effective-pom
+```
+
+- **Before agreeing that a mechanism is missing or unconfigured**, read the parent POM chain and the
+  effective POM. A repo-scoped search alone proves nothing about inherited configuration: absence
+  from this tree is not absence from the build.
+- **Before adding a `<repositories>` or `<pluginRepositories>` declaration** — or any element Maven
+  merges by id — walk the parent chain to its root and read the effective POM first. Maven merges
+  same-id entries by replacement, not addition, so a local declaration displaces the inherited one
+  instead of joining it. Never reuse a super-POM reserved id such as `central` for an additive
+  channel.
+- **Before adopting an unreleased snapshot version-property pin**, enumerate every artifact that
+  property governs — the main jar and every classifier — and verify each one's actual contents from
+  the remote repository rather than a possibly-warm `~/.m2`. Compare class counts against the last
+  known-good release.
+
 ### Project Structure
 Multi-module Maven project:
 - `token-sheriff-validation/` - The core Token-Sheriff validation library
